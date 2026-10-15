@@ -19,3 +19,7 @@ class Forbidden(DomainError):
 
 class Conflict(DomainError):
     status_code = 409
+
+
+class RateLimited(DomainError):
+    status_code = 429

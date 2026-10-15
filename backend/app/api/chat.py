@@ -14,6 +14,7 @@ from sqlalchemy import delete, select
 from app.assistant import memory
 from app.assistant.chat import ChatService, confirm_action, message_to_dict, reject_action
 from app.assistant.factory import get_chat_service
+from app.assistant.quota import check_chat_quota
 from app.config import get_settings
 from app.deps import CurrentUser, SessionDep
 from app.errors import DomainError, NotFound
@@ -105,6 +106,12 @@ async def send_message(
         raise DomainError(
             "Ассистент не настроен: укажите OPENAI_API_KEY в файле .env и перезапустите docker compose."
         )
+    await check_chat_quota(
+        session,
+        user.id,
+        per_user_hourly=get_settings().chat_user_hourly_limit,
+        total_daily=get_settings().chat_daily_limit,
+    )
     if conversation_id in ACTIVE_TURNS:
         raise DomainError("Ассистент ещё отвечает в этом диалоге. Дождитесь ответа или нажмите «Остановить».")
     stop = asyncio.Event()

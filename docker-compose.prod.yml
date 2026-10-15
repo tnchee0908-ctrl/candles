@@ -1,0 +1,53 @@
+# Сервер: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Отличия от локального запуска:
+#  * наружу открыт только Caddy (80/443) с автоматическим HTTPS для DOMAIN;
+#  * бэкенд, база, Redis и моки доступны только внутри сети Docker;
+#  * JWT_SECRET и DOMAIN обязательны, у ассистента лимиты сообщений;
+#  * контейнеры перезапускаются сами после сбоя или перезагрузки сервера.
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  db:
+    <<: *restart
+  redis:
+    <<: *restart
+  rates-mock:
+    <<: *restart
+    ports: !reset []
+  marking-mock:
+    <<: *restart
+    ports: !reset []
+  backend:
+    <<: *restart
+    ports: !reset []
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?задайте JWT_SECRET в .env}
+      CHAT_USER_HOURLY_LIMIT: ${CHAT_USER_HOURLY_LIMIT:-30}
+      CHAT_DAILY_LIMIT: ${CHAT_DAILY_LIMIT:-300}
+  worker:
+    <<: *restart
+  frontend:
+    <<: *restart
+    ports: !reset []
+
+  caddy:
+    image: caddy:2.8-alpine
+    <<: *restart
+    environment:
+      DOMAIN: ${DOMAIN:?задайте DOMAIN в .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:

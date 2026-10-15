@@ -44,7 +44,7 @@ docker compose up --build
 ### Тесты, линтеры, эталонный прогон
 
 ```bash
-docker compose exec backend pytest -q                 # 32 теста на настоящем PostgreSQL (БД candles_test)
+docker compose exec backend pytest -q                 # 38 тестов на настоящем PostgreSQL (БД candles_test)
 docker compose exec backend ruff check .
 cd frontend && npm install && npm run lint && npm run build
 docker compose exec backend python -m eval.run_eval   # эталонные вопросы, нужен OPENAI_API_KEY
@@ -53,6 +53,23 @@ docker compose exec backend python -m eval.run_eval   # эталонные во�
 Отчёт прогона сохраняется в `backend/eval/reports/latest.md` (папка примонтирована из контейнера).
 
 **Последний прогон** ([отчёт](backend/eval/reports/latest.md)) на чистых демо-данных: машинные проверки — **14 из 14** вопросов, LLM-судья — **5,00 из 5** (14 из 14 «pass»). В наборе есть вопросы без ответа в данных (курс биткоина, продажи), Code Interpreter (график, расчёт «что если») и две промпт-инъекции: от пользователя и в комментарии к партии.
+
+## Развёртывание на сервере
+
+Для сервера есть `docker-compose.prod.yml`. Перед сайтом стоит Caddy, он сам получает и продлевает HTTPS-сертификат. Наружу открыты только порты 80 и 443: база, Redis, бэкенд и моки доступны лишь внутри сети Docker. Контейнеры перезапускаются сами. У ассистента включены лимиты (по умолчанию 30 сообщений в час на пользователя и 300 в сутки на всех), чтобы публичный стенд не израсходовал бюджет ключа.
+
+1. **Сервер:** VPS с Ubuntu 24.04, от 2 ГБ памяти. **Только в стране, где работает OpenAI API**, например в ЕС: из России API отвечает отказом (ассистент тогда покажет понятную ошибку).
+2. **Домен:** A-запись в DNS указывает на IP сервера.
+3. **На сервере:**
+
+```bash
+curl -fsSL https://get.docker.com | sh
+git clone <ссылка на репозиторий> candles && cd candles
+cp .env.example .env    # заполнить OPENAI_API_KEY, DOMAIN и JWT_SECRET (например: openssl rand -hex 32)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Обновление: `git pull`, затем та же команда `up -d --build`.
 
 ## Демо-данные
 

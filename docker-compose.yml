@@ -12,6 +12,8 @@ x-backend-env: &backend-env
   LLM_JUDGE_MODEL: ${LLM_JUDGE_MODEL:-gpt-4.1-mini}
   LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-120}
   JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+  CHAT_USER_HOURLY_LIMIT: ${CHAT_USER_HOURLY_LIMIT:-0}
+  CHAT_DAILY_LIMIT: ${CHAT_DAILY_LIMIT:-0}
 
 services:
   db:

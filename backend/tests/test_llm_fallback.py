@@ -75,3 +75,35 @@ async def test_invalid_key_is_reported_clearly_and_not_retried():
         await collect(FallbackLLM([primary, backup]))
     assert backup.requests == []
     assert "Ключ OpenAI недействителен" in exc.value.user_message
+
+
+async def test_region_block_from_openai_is_explained():
+    """Ответ OpenAI 403 unsupported_country_region_territory превращается в понятную ошибку."""
+    import httpx
+    import openai
+
+    from app.assistant.llm.base import LLMRegionError, LLMRequest
+    from app.assistant.llm.openai_provider import OpenAIProvider
+
+    class Responses:
+        async def create(self, **kwargs):
+            request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+            body = {
+                "error": {
+                    "code": "unsupported_country_region_territory",
+                    "message": "Country, region, or territory not supported",
+                }
+            }
+            response = httpx.Response(403, request=request, json=body)
+            raise openai.PermissionDeniedError(
+                "Country, region, or territory not supported", response=response, body=body["error"]
+            )
+
+    class Client:
+        responses = Responses()
+
+    provider = OpenAIProvider(Client(), "gpt-test")  # type: ignore[arg-type]
+    with pytest.raises(LLMRegionError) as exc:
+        async for _ in provider.stream(LLMRequest(instructions="i", input=[])):
+            pass
+    assert "страну" in exc.value.user_message

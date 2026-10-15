@@ -12,6 +12,7 @@ from app.assistant.llm.base import (
     Completed,
     LLMAuthError,
     LLMEvent,
+    LLMRegionError,
     LLMRequest,
     LLMRequestError,
     LLMRetryableError,
@@ -92,6 +93,9 @@ class OpenAIProvider:
             if exc.status_code >= 500:
                 raise LLMRetryableError(f"HTTP {exc.status_code}") from exc
             if exc.status_code in (401, 403):
+                details = f"{getattr(exc, 'code', '')} {exc.message}".lower()
+                if "unsupported_country" in details or "country, region" in details:
+                    raise LLMRegionError(f"HTTP {exc.status_code}: region not supported") from exc
                 raise LLMAuthError(f"HTTP {exc.status_code}") from exc
             raise LLMRequestError(f"HTTP {exc.status_code}: {exc.message[:300]}") from exc
 

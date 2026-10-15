@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     llm_max_tool_steps: int = 8
     # Низкая температура: ответы по учётным данным должны быть повторяемыми, а не «творческими».
     llm_temperature: float = 0.2
+    # Лимиты сообщений ассистенту (0 — без лимита). На публичном стенде защищают бюджет ключа.
+    chat_user_hourly_limit: int = 0
+    chat_daily_limit: int = 0
     # Модель, которая оценивает ответы в прогоне эталонных вопросов.
     llm_judge_model: str = "gpt-4.1-mini"
 
