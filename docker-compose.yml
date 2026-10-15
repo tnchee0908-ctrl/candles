@@ -1,0 +1,82 @@
+name: candles
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://candles:candles@db:5432/candles
+  TEST_DATABASE_URL: postgresql+asyncpg://candles:candles@db:5432/candles_test
+  REDIS_URL: redis://redis:6379/0
+  RATES_SERVICE_URL: http://rates-mock:8101
+  MARKING_SERVICE_URL: http://marking-mock:8102
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-gpt-4.1-mini}
+  LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-gpt-4o-mini}
+  LLM_JUDGE_MODEL: ${LLM_JUDGE_MODEL:-gpt-4.1-mini}
+  LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-60}
+  JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: candles
+      POSTGRES_PASSWORD: candles
+      POSTGRES_DB: candles
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candles -d candles"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  rates-mock:
+    build: ./backend
+    command: uvicorn mocks.rates:app --host 0.0.0.0 --port 8101
+    ports: ["8101:8101"]
+
+  marking-mock:
+    build: ./backend
+    command: uvicorn mocks.marking:app --host 0.0.0.0 --port 8102
+    environment:
+      MARKING_FAILURE_RATE: ${MARKING_FAILURE_RATE:-0.3}
+      MARKING_SLOW_RATE: ${MARKING_SLOW_RATE:-0.1}
+      MARKING_SLOW_SECONDS: ${MARKING_SLOW_SECONDS:-10}
+    ports: ["8102:8102"]
+
+  backend:
+    build: ./backend
+    environment: *backend-env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rates-mock: { condition: service_started }
+      marking-mock: { condition: service_started }
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend/eval/reports:/app/eval/reports
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 3s
+      retries: 40
+
+  worker:
+    build: ./backend
+    command: arq app.worker.WorkerSettings
+    environment: *backend-env
+    depends_on:
+      backend: { condition: service_healthy }
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      backend: { condition: service_healthy }
+    ports: ["8080:80"]
+
+volumes:
+  pgdata:

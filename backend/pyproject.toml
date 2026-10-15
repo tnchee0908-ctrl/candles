@@ -1,0 +1,49 @@
+[project]
+name = "candles"
+version = "0.1.0"
+description = "Учёт склада и производства мастерской свечей + ИИ-ассистент"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.2",
+    "sqlalchemy[asyncio]==2.0.40",
+    "asyncpg==0.30.0",
+    "alembic==1.15.2",
+    "pydantic==2.11.4",
+    "pydantic-settings==2.9.1",
+    "httpx==0.28.1",
+    "arq==0.26.3",
+    "redis==5.2.1",
+    "openai==1.109.1",
+    "pyjwt==2.10.1",
+    "python-multipart==0.0.20",
+    "openpyxl==3.1.5",
+    "pyyaml==6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-asyncio==0.26.0",
+    "ruff==0.11.10",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S608"]
+ignore = ["B008", "E501"]  # длину строк держит ruff format; длинные строки-сообщения не рвём
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*", "mocks*"]
