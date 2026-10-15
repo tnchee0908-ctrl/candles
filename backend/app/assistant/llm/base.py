@@ -26,6 +26,7 @@ class LLMRequest:
     # id контейнера Code Interpreter; None — встроенный инструмент выключен.
     code_container: str | None = None
     timeout: float = 60.0
+    temperature: float | None = None
 
 
 @dataclass

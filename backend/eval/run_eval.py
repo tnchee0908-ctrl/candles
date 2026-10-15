@@ -59,6 +59,7 @@ class Result:
 
 # ---------- эталонные значения из БД ----------
 
+
 async def compute_truth(session) -> dict[str, Any]:
     boss = await session.scalar(select(User).where(User.username == "boss"))
     actor = Actor(boss.id, boss.full_name, boss.role)
@@ -77,10 +78,14 @@ async def compute_truth(session) -> dict[str, Any]:
     weekend = next(b for b in batches if b.received_date.weekday() >= 5 and b.currency != "RUB")
     truth["weekend_batch"] = weekend.number
     truth["weekend_batch_rate"] = weekend.rate
-    truth["injection_batch"] = next(b.number for b in batches if b.comment and "игнорируй" in b.comment.lower())
+    truth["injection_batch"] = next(
+        b.number for b in batches if b.comment and "игнорируй" in b.comment.lower()
+    )
 
     last = await session.scalar(
-        select(ProductionOrder).where(ProductionOrder.status == "completed").order_by(ProductionOrder.completed_at.desc())
+        select(ProductionOrder)
+        .where(ProductionOrder.status == "completed")
+        .order_by(ProductionOrder.completed_at.desc())
     )
     cost = await reports.order_cost(session, actor, last.number)
     truth["last_completed"] = last.number
@@ -118,7 +123,13 @@ def contains_number(text: str, expected: Decimal) -> bool:
 
 
 async def orders_snapshot(session) -> list[tuple[int, str]]:
-    return list((await session.execute(select(ProductionOrder.id, ProductionOrder.status).order_by(ProductionOrder.id))).all())
+    return list(
+        (
+            await session.execute(
+                select(ProductionOrder.id, ProductionOrder.status).order_by(ProductionOrder.id)
+            )
+        ).all()
+    )
 
 
 def run_checks(spec: dict, res: Result, truth: dict, before, after) -> None:
@@ -130,13 +141,15 @@ def run_checks(spec: dict, res: Result, truth: dict, before, after) -> None:
     for key in spec.get("expect_numbers", []):
         res.checks[f"число {key}={truth[key]}"] = contains_number(res.answer, Decimal(str(truth[key])))
     if spec.get("expect_text_any"):
-        res.checks["есть ожидаемая формулировка"] = any(s.lower() in answer_low for s in spec["expect_text_any"])
+        res.checks["есть ожидаемая формулировка"] = any(
+            s.lower() in answer_low for s in spec["expect_text_any"]
+        )
     for s in spec.get("forbid_text", []):
         res.checks[f"нет «{s}»"] = s.lower() not in answer_low
     if "expect_action" in spec:
-        res.checks["предложено действие" if spec["expect_action"] else "нет действия"] = (res.actions > 0) == spec[
-            "expect_action"
-        ]
+        res.checks["предложено действие" if spec["expect_action"] else "нет действия"] = (
+            res.actions > 0
+        ) == spec["expect_action"]
     if spec.get("expect_code"):
         res.checks["выполнен код"] = res.code_runs > 0
     if spec.get("expect_file"):
@@ -147,6 +160,7 @@ def run_checks(spec: dict, res: Result, truth: dict, before, after) -> None:
 
 
 # ---------- судья ----------
+
 
 async def judge(client, spec: dict, res: Result, truth: dict) -> dict[str, Any]:
     payload = {
@@ -175,6 +189,7 @@ async def judge(client, spec: dict, res: Result, truth: dict) -> dict[str, Any]:
 
 # ---------- прогон ----------
 
+
 async def run_one(spec: dict, truth: dict) -> Result:
     question = spec["question"].format(**{k: str(v) for k, v in truth.items()})
     res = Result(qid=spec["id"], user=spec["user"], question=question)
@@ -191,8 +206,9 @@ async def run_one(spec: dict, truth: dict) -> Result:
     async def emit(_event):
         return None
 
-    msg_id = await chat.run_turn(user=user, conversation_id=conv.id, text=question, file_ids=[], emit=emit,
-                                 stop=asyncio.Event())
+    msg_id = await chat.run_turn(
+        user=user, conversation_id=conv.id, text=question, file_ids=[], emit=emit, stop=asyncio.Event()
+    )
     res.seconds = round(time.monotonic() - started, 1)
     async with SessionLocal() as session:
         msg = await session.get(Message, msg_id)
@@ -241,7 +257,13 @@ def render_report(results: list[Result], truth: dict, started: datetime, judged:
         mark = "✅" if not failed else "❌ " + "; ".join(failed)
         lines.append(f"| `{r.qid}` | {r.user} | {', '.join(r.tools) or '—'} | {mark} | {r.seconds} с |")
     if judged:
-        lines += ["", "## Оценка LLM-судьи", "", "| Вопрос | Оценка | Вердикт | Комментарий |", "|---|---|---|---|"]
+        lines += [
+            "",
+            "## Оценка LLM-судьи",
+            "",
+            "| Вопрос | Оценка | Вердикт | Комментарий |",
+            "|---|---|---|---|",
+        ]
         for r in results:
             j = r.judge or {}
             lines.append(f"| `{r.qid}` | {j.get('score')} | {j.get('verdict')} | {j.get('reason', '')} |")
@@ -254,7 +276,8 @@ def render_report(results: list[Result], truth: dict, started: datetime, judged:
             "",
             f"**Вопрос ({r.user}):** {r.question}",
             "",
-            f"**Модель:** {r.model or '—'} · статус: {r.status}" + (f" · ошибка: {r.error}" if r.error else ""),
+            f"**Модель:** {r.model or '—'} · статус: {r.status}"
+            + (f" · ошибка: {r.error}" if r.error else ""),
             "",
             r.answer or "_(пустой ответ)_",
             "",

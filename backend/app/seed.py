@@ -9,11 +9,13 @@ import asyncio
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from app.db import SessionLocal
 from app.models import (
+    AuditLog,
     Consumption,
+    MarkingAttempt,
     MarkingReport,
     Material,
     ProductionOrder,
@@ -149,6 +151,20 @@ async def seed() -> None:
                 status = (statuses or {}).get(i, "accepted")
                 if status != "on_check":
                     await batches.set_status(session, storekeeper, b.id, status)
+            # Журнал — на дату поступления (создание в 10:00, приёмка в 12:00), а не на момент заливки сида.
+            ids = [b.id for b in created]
+            for action_is_create, hour in ((True, 10), (False, 12)):
+                cond = AuditLog.action == "Партия создана"
+                await session.execute(
+                    update(AuditLog)
+                    .where(
+                        AuditLog.entity_type == "batch",
+                        AuditLog.entity_id.in_(ids),
+                        cond if action_is_create else ~cond,
+                    )
+                    .values(at=datetime.combine(day, time(hour, 0), tzinfo=UTC))
+                )
+            await session.commit()
 
         async def history_order(days_ago, recipe, qty, wax_factor="1"):
             """Задание проходит весь цикл сегодня, затем его даты сдвигаются в прошлое."""
@@ -185,11 +201,39 @@ async def seed() -> None:
             await session.execute(
                 update(Consumption).where(Consumption.order_id == order.id).values(consumed_at=done_at)
             )
+            # Журнал задания — на даты истории, и плановая дата в снимках «было/стало» — тоже.
+            await session.execute(
+                text(
+                    "UPDATE audit_log SET at = CASE action "
+                    "  WHEN 'Задание создано' THEN CAST(:created AS timestamptz) WHEN 'Задание запланировано' THEN CAST(:planned AS timestamptz) "
+                    "  WHEN 'Задание запущено' THEN CAST(:started AS timestamptz) ELSE CAST(:done AS timestamptz) END, "
+                    "before = CASE WHEN before ? 'planned_date' "
+                    "  THEN jsonb_set(before, '{planned_date}', to_jsonb(CAST(:pd AS text))) ELSE before END, "
+                    "after = CASE WHEN after ? 'planned_date' "
+                    "  THEN jsonb_set(after, '{planned_date}', to_jsonb(CAST(:pd AS text))) ELSE after END "
+                    "WHERE entity_type = 'order' AND entity_id = :oid"
+                ),
+                {
+                    "created": done_at - timedelta(days=2),
+                    "planned": done_at - timedelta(days=2, minutes=-5),
+                    "started": datetime.combine(when, time(9, 0), tzinfo=UTC),
+                    "done": done_at,
+                    "pd": when.isoformat(),
+                    "oid": order.id,
+                },
+            )
             if days_ago > 7:  # старые отчёты считаем давно отправленными; последний отправит воркер
-                await session.execute(
-                    update(MarkingReport)
-                    .where(MarkingReport.order_id == order.id)
-                    .values(status="sent", sent_at=done_at, attempts=1, external_id=f"seed-{order.id}")
+                report = await session.scalar(select(MarkingReport).where(MarkingReport.order_id == order.id))
+                report.status, report.sent_at, report.attempts = "sent", done_at, 1
+                report.external_id = f"seed-{order.id}"
+                session.add(
+                    MarkingAttempt(
+                        report_id=report.id,
+                        attempt_no=1,
+                        at=done_at + timedelta(seconds=2),
+                        status_code=200,
+                        duration_ms=48,
+                    )
                 )
             await session.commit()
 

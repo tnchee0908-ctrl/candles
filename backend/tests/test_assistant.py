@@ -11,11 +11,11 @@ from sqlalchemy import func, select
 
 from app.assistant import memory
 from app.assistant.chat import ChatService, build_instructions, confirm_action
-from app.assistant.llm.base import LLMRetryableError, TextDelta
+from app.assistant.llm.base import CodeRun, Completed, LLMRetryableError, TextDelta
 from app.assistant.llm.router import FallbackLLM
 from app.assistant.pii import Pseudonymizer
 from app.errors import DomainError, NotFound
-from app.models import Conversation, Message, PendingAction, ProductionOrder
+from app.models import ChatFile, Conversation, Message, PendingAction, ProductionOrder
 from tests.conftest import add_batch
 from tests.fakes import FakeSandbox, ScriptedProvider, call, say
 
@@ -42,12 +42,9 @@ async def run_turn(chat: ChatService, user, conv, text: str, stop: asyncio.Event
 
 
 def tool_outputs(provider: ScriptedProvider) -> list[dict]:
-    out = []
-    for r in provider.requests:
-        for item in r.input:
-            if item.get("type") == "function_call_output":
-                out.append(json.loads(item["output"]))
-    return out
+    """Результаты инструментов, которые увидела модель (последний запрос содержит всю историю хода)."""
+    last = provider.requests[-1]
+    return [json.loads(i["output"]) for i in last.input if i.get("type") == "function_call_output"]
 
 
 def chat_with(session_factory, steps, sandbox=None) -> tuple[ChatService, ScriptedProvider]:
@@ -272,3 +269,95 @@ async def test_fallback_model_is_recorded(session, session_factory, world):
     msg = await session.get(Message, msg_id)
     assert msg.model == "backup-model"
     assert [a["ok"] for a in msg.meta["llm_attempts"]] == [False, True]
+
+
+async def test_double_confirm_creates_single_order(session, session_factory, world):
+    """Двойной клик / две вкладки: «Подтвердить» одновременно — задание должно появиться одно."""
+    await add_batch(session, world, world.wax, "50", days_ago=5)
+    await add_batch(session, world, world.wick, "500", days_ago=5)
+    chat, _ = chat_with(
+        session_factory,
+        [
+            call(
+                "propose_production_order",
+                {"recipe": "Лаванда", "qty": 10, "planned_date": FRIDAY.isoformat()},
+            ),
+            say("Нажмите «Подтвердить»."),
+        ],
+    )
+    tech = world.users["tech"]
+    conv = await new_conversation(session, tech)
+    events, _ = await run_turn(chat, tech, conv, "Запланируй 10 свечей")
+    action_id = next(e for e in events if e["type"] == "action")["action"]["id"]
+
+    async def click():
+        async with session_factory() as s:
+            try:
+                return (await confirm_action(s, tech, action_id)).status
+            except DomainError as exc:
+                return exc.message
+
+    results = await asyncio.gather(click(), click())
+    assert sorted(results) == ["confirmed", "Это действие уже обработано."]
+    assert await session.scalar(select(func.count()).select_from(ProductionOrder)) == 1
+
+
+async def test_action_after_failed_tool_still_works(session, session_factory, world):
+    """Ошибка одного инструмента откатывает транзакцию — следующий инструмент в том же ходе должен работать."""
+    await add_batch(session, world, world.wax, "50", days_ago=5)
+    await add_batch(session, world, world.wick, "500", days_ago=5)
+    chat, provider = chat_with(
+        session_factory,
+        [
+            call("get_order_cost", {"order_number": "З-99999"}),
+            call(
+                "propose_production_order",
+                {"recipe": "Лаванда", "qty": 5, "planned_date": FRIDAY.isoformat()},
+            ),
+            say("Готово к подтверждению."),
+        ],
+    )
+    tech = world.users["tech"]
+    conv = await new_conversation(session, tech)
+    events, msg_id = await run_turn(chat, tech, conv, "?")
+    outputs = tool_outputs(provider)
+    assert "не найдено" in outputs[0]["error"]
+    assert outputs[1]["status"] == "awaiting_user_confirmation"
+    assert (await session.get(Message, msg_id)).status == "complete"
+
+
+async def test_generated_files_are_saved_and_names_restored(session, session_factory, world):
+    sandbox = FakeSandbox()
+    pii = await Pseudonymizer.load(session)
+    alias = pii.alias_for("supplier", world.supplier.id)
+    sandbox.generated["/mnt/data/report.csv"] = f"supplier,qty\n{alias},10\n".encode()
+    sandbox.generated["/mnt/data/chart.png"] = b"\x89PNG..."
+    sandbox.generated["/mnt/data/cfile_abc123.png"] = b"\x89PNG..."  # перехвачено из plt.show()
+    sandbox.generated["/mnt/data/____.json"] = b'{"type": "line", "labels": [], "datasets": []}'  # служебный
+    chat, _ = chat_with(
+        session_factory,
+        [[CodeRun(code="df.plot()"), Completed(model="fake", output_items=[])], say("График готов.")],
+        sandbox,
+    )
+    conv = await new_conversation(session, world.users["boss"])
+    events, msg_id = await run_turn(chat, world.users["boss"], conv, "построй график")
+    files = [e["file"] for e in events if e["type"] == "file"]
+    # cfile_*.png — дубль именованного chart.png, его пропускаем; служебный JSON тоже
+    assert sorted(f["filename"] for f in files) == ["chart.png", "report.csv"]
+    csv_file = await session.get(ChatFile, next(f["id"] for f in files if f["filename"] == "report.csv"))
+    assert csv_file.data.decode() == "supplier,qty\nООО Восковой двор,10\n"  # псевдоним заменён обратно
+    msg = await session.get(Message, msg_id)
+    assert msg.status == "complete" and msg.meta["code"][0]["code"] == "df.plot()"
+
+
+async def test_captured_image_gets_readable_name(session, session_factory, world):
+    sandbox = FakeSandbox()
+    sandbox.generated["/mnt/data/cfile_abc123.png"] = b"PNG..."  # модель только вызвала plt.show()
+    chat, _ = chat_with(
+        session_factory,
+        [[CodeRun(code="plt.show()"), Completed(model="fake", output_items=[])], say("Готово.")],
+        sandbox,
+    )
+    conv = await new_conversation(session, world.users["boss"])
+    events, _ = await run_turn(chat, world.users["boss"], conv, "график")
+    assert [e["file"]["filename"] for e in events if e["type"] == "file"] == ["график_1.png"]

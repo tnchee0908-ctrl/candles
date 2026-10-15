@@ -7,17 +7,37 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import func, update
 
 from app.api import auth, chat, orders, warehouse
 from app.config import get_settings
+from app.db import SessionLocal
 from app.errors import DomainError
+from app.models import Message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
 
 
+async def mark_stale_streams() -> None:
+    """Если процесс упал посреди ответа, сообщение осталось в статусе streaming — помечаем прерванным."""
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Message)
+            .where(Message.status == "streaming")
+            .values(
+                status="interrupted",
+                meta=Message.meta.op("||")(
+                    func.jsonb_build_object("error", "Ответ прерван: сервер был перезапущен.")
+                ),
+            )
+        )
+        await session.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await mark_stale_streams()
     try:
         app.state.arq = await create_pool(RedisSettings.from_dsn(get_settings().redis_url))
     except Exception:  # noqa: BLE001 — без Redis API работает, отчёты подберёт cron воркера

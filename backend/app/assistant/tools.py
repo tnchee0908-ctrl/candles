@@ -15,10 +15,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assistant import memory
@@ -31,7 +33,6 @@ from app.models import (
     ORDER_STATUS_TITLES,
     Batch,
     BatchStatus,
-    Conversation,
     OrderStatus,
     PendingAction,
 )
@@ -49,7 +50,8 @@ log = logging.getLogger(__name__)
 class ToolContext:
     session: AsyncSession
     actor: Actor
-    conversation: Conversation
+    # Только id: после отката транзакции (ошибка в другом инструменте) ORM-объекты «протухают».
+    conversation_id: int
     pii: Pseudonymizer
     assistant_message_id: int
     sandbox: Sandbox | None = None
@@ -81,9 +83,15 @@ class Tool:
 REGISTRY: dict[str, Tool] = {}
 
 
-def tool(name: str, description: str, args_model: type[Args], kind: str = "read"):
+# Описания инструментов — это текст для модели, поэтому они лежат в prompts/tools.yaml, а не в коде.
+DESCRIPTIONS: dict[str, str] = yaml.safe_load(
+    (Path(__file__).resolve().parent.parent / "prompts" / "tools.yaml").read_text(encoding="utf-8")
+)
+
+
+def tool(name: str, args_model: type[Args], kind: str = "read"):
     def deco(fn: Handler) -> Handler:
-        REGISTRY[name] = Tool(name, description, args_model, fn, kind)  # type: ignore[arg-type]
+        REGISTRY[name] = Tool(name, DESCRIPTIONS[name], args_model, fn, kind)  # type: ignore[arg-type]
         return fn
 
     return deco
@@ -98,12 +106,7 @@ class StockArgs(Args):
     )
 
 
-@tool(
-    "get_material_stock",
-    "Остаток материала на складе: в принятых партиях (on_hand), в резерве под задания (reserved), "
-    "свободный остаток (free) и сколько ждёт приёмки (awaiting_inspection).",
-    StockArgs,
-)
+@tool("get_material_stock", StockArgs)
 async def get_material_stock(ctx: ToolContext, args: StockArgs) -> dict[str, Any]:
     rows = await reports.material_stock(ctx.session, ctx.actor, args.material)
     if not rows:
@@ -117,12 +120,7 @@ class PeriodArgs(Args):
     workshop: int | None = Field(default=None, ge=1, le=3, description="Номер цеха, если нужно отфильтровать")
 
 
-@tool(
-    "get_shortages",
-    "Дефицит материалов по незапущенным заданиям (черновики и запланированные) с плановой датой в периоде: "
-    "сколько не зарезервировано, сколько есть свободного и чего реально не хватит (shortage).",
-    PeriodArgs,
-)
+@tool("get_shortages", PeriodArgs)
 async def get_shortages(ctx: ToolContext, args: PeriodArgs) -> dict[str, Any]:
     return await reports.shortages_for_period(
         ctx.session, ctx.actor, args.date_from, args.date_to, args.workshop
@@ -141,12 +139,7 @@ def _normalize_number(value: str, prefix: str) -> str:
     return f"{prefix}-{int(digits):05d}"
 
 
-@tool(
-    "get_batch_history",
-    "Карточка и история партии: поставщик, даты, цена и курс, статус приёмки, резервы и списания по заданиям, "
-    "журнал изменений.",
-    BatchArgs,
-)
+@tool("get_batch_history", BatchArgs)
 async def get_batch_history(ctx: ToolContext, args: BatchArgs) -> dict[str, Any]:
     number = _normalize_number(args.batch_number, "П")
     batch, reservations, consumptions, history = await batches_service.get_batch_card(
@@ -189,12 +182,7 @@ class OrderNumberArgs(Args):
     order_number: str = Field(max_length=20, description="Номер задания, например З-00007")
 
 
-@tool(
-    "get_order_cost",
-    "Себестоимость производственного задания в рублях: всего, на 1 шт и по материалам. Для завершённых — по "
-    "фактическому списанию, для остальных — оценка по текущему резерву.",
-    OrderNumberArgs,
-)
+@tool("get_order_cost", OrderNumberArgs)
 async def get_order_cost(ctx: ToolContext, args: OrderNumberArgs) -> dict[str, Any]:
     return await reports.order_cost(ctx.session, ctx.actor, _normalize_number(args.order_number, "З"))
 
@@ -209,11 +197,7 @@ class ListOrdersArgs(Args):
     workshop: int | None = Field(default=None, ge=1, le=3)
 
 
-@tool(
-    "list_orders",
-    "Список производственных заданий с фильтрами по плановой дате, статусу и цеху. Показывает и состояние резерва.",
-    ListOrdersArgs,
-)
+@tool("list_orders", ListOrdersArgs)
 async def list_orders(ctx: ToolContext, args: ListOrdersArgs) -> dict[str, Any]:
     rows = await orders.list_orders(
         ctx.session,
@@ -245,7 +229,7 @@ class NoArgs(Args):
     pass
 
 
-@tool("list_recipes", "Рецепты (продукты) и нормы расхода материалов на 1 шт.", NoArgs)
+@tool("list_recipes", NoArgs)
 async def list_recipes(ctx: ToolContext, args: NoArgs) -> dict[str, Any]:
     recipes = await catalog.list_recipes(ctx.session, ctx.actor)
     return {
@@ -278,11 +262,7 @@ class FindBatchesArgs(Args):
     limit: int = Field(default=20, ge=1, le=50)
 
 
-@tool(
-    "find_batches",
-    "Поиск партий в реестре по материалу, поставщику, статусу и дате поступления. Новые сверху.",
-    FindBatchesArgs,
-)
+@tool("find_batches", FindBatchesArgs)
 async def find_batches(ctx: ToolContext, args: FindBatchesArgs) -> dict[str, Any]:
     rows, total = await batches_service.list_batches(
         ctx.session,
@@ -320,11 +300,7 @@ class RateArgs(Args):
     on_date: date | None = Field(default=None, description="Дата курса; по умолчанию сегодня")
 
 
-@tool(
-    "get_currency_rate",
-    "Курс валюты к рублю на дату (в выходные — последний предыдущий опубликованный курс).",
-    RateArgs,
-)
+@tool("get_currency_rate", RateArgs)
 async def get_currency_rate(ctx: ToolContext, args: RateArgs) -> dict[str, Any]:
     on_date = args.on_date or date.today()
     rate, rate_date = await get_rate(ctx.session, args.currency, on_date)
@@ -348,13 +324,7 @@ class ProposeOrderArgs(Args):
     comment: str | None = Field(default=None, max_length=300)
 
 
-@tool(
-    "propose_production_order",
-    "Подготовить создание и планирование производственного задания (с резервом по FIFO). Ничего не меняет: "
-    "пользователь увидит карточку и сам нажмёт «Подтвердить». Возвращает, что будет зарезервировано и дефицит.",
-    ProposeOrderArgs,
-    kind="action",
-)
+@tool("propose_production_order", ProposeOrderArgs, kind="action")
 async def propose_production_order(ctx: ToolContext, args: ProposeOrderArgs) -> dict[str, Any]:
     # Права проверяем уже на этапе предложения — чтобы не показывать кнопку, которая всё равно не сработает.
     # При подтверждении сервис проверит их ещё раз.
@@ -377,7 +347,7 @@ async def propose_production_order(ctx: ToolContext, args: ProposeOrderArgs) -> 
         "has_shortage": any(r["shortage"] > 0 for r in preview_rows),
     }
     action = PendingAction(
-        conversation_id=ctx.conversation.id,
+        conversation_id=ctx.conversation_id,
         message_id=ctx.assistant_message_id,
         user_id=ctx.actor.user_id,
         kind="create_and_plan_order",
@@ -410,13 +380,7 @@ class FactArgs(Args):
     )
 
 
-@tool(
-    "remember_fact",
-    "Запомнить устойчивый факт или предпочтение текущего пользователя (валюта отчётов, его цех и т.п.). "
-    "Факт будет учитываться в новых диалогах этого пользователя.",
-    FactArgs,
-    kind="memory",
-)
+@tool("remember_fact", FactArgs, kind="memory")
 async def remember_fact(ctx: ToolContext, args: FactArgs) -> dict[str, Any]:
     fact = await memory.add_fact(ctx.session, ctx.actor.user_id, args.fact)
     return {"saved": True, "fact_id": fact.id, "fact": fact.text}
@@ -436,7 +400,12 @@ class ExportArgs(Args):
         default=None, description="Начало периода (для consumption_by_week, batches, orders)"
     )
     date_to: date | None = Field(default=None)
-    material: str | None = Field(default=None, max_length=100)
+    material: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Фильтр по материалу (код или часть названия) для consumption_by_week, batches и stock. "
+        "Для recipe_costs и orders не применяется.",
+    )
 
 
 async def _dataset_rows(ctx: ToolContext, args: ExportArgs) -> list[dict[str, Any]]:
@@ -522,8 +491,6 @@ async def _dataset_rows(ctx: ToolContext, args: ExportArgs) -> list[dict[str, An
 
 async def _avg_unit_cost(session: AsyncSession) -> dict[int, Decimal]:
     """Средневзвешенная себестоимость единицы по всем принятым партиям (по полученному количеству)."""
-    from sqlalchemy import func
-
     rows = await session.execute(
         select(Batch.material_id, func.sum(Batch.qty * Batch.unit_cost_rub) / func.sum(Batch.qty))
         .where(Batch.status == BatchStatus.ACCEPTED)
@@ -532,13 +499,7 @@ async def _avg_unit_cost(session: AsyncSession) -> dict[int, Decimal]:
     return {mid: Decimal(v).quantize(Decimal("0.0001")) for mid, v in rows.all() if v is not None}
 
 
-@tool(
-    "export_dataset",
-    "Выгрузить набор данных из учёта в CSV-файл в песочнице Code Interpreter. Возвращает путь к файлу "
-    "(/mnt/data/...), колонки и первые строки. Затем читай файл в Python через code_interpreter.",
-    ExportArgs,
-    kind="sandbox",
-)
+@tool("export_dataset", ExportArgs, kind="sandbox")
 async def export_dataset(ctx: ToolContext, args: ExportArgs) -> dict[str, Any]:
     if ctx.sandbox is None or ctx.container_id is None:
         raise DomainError("Песочница для расчётов сейчас недоступна, выгрузить данные не получится.")
@@ -557,7 +518,13 @@ async def export_dataset(ctx: ToolContext, args: ExportArgs) -> dict[str, Any]:
         path = await ctx.sandbox.upload(ctx.container_id, filename, buf.getvalue().encode("utf-8"))
     except SandboxError as exc:
         raise DomainError("Не удалось загрузить данные в песочницу. Попробуйте ещё раз.") from exc
-    return {"path": path, "rows": len(masked), "columns": columns, "head": masked[:5]}
+    result = {"path": path, "rows": len(masked), "columns": columns, "head": masked[:5]}
+    if args.material and args.dataset in ("recipe_costs", "orders"):
+        result["note"] = (
+            "Фильтр material к этому набору не применяется: в файле все строки целиком. "
+            "Ищи нужный материал по колонке material_code (например, WAX-SOY — воск соевый)."
+        )
+    return result
 
 
 def _cell(v: Any) -> Any:

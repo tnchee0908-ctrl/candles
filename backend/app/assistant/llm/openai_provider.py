@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 import openai
-from openai import AsyncOpenAI
+from openai import NOT_GIVEN, AsyncOpenAI
 
 from app.assistant.llm.base import (
     CodeRun,
@@ -54,6 +54,7 @@ class OpenAIProvider:
                 input=request.input,  # type: ignore[arg-type]
                 tools=self._tools(request),  # type: ignore[arg-type]
                 include=["code_interpreter_call.outputs"],
+                temperature=request.temperature if request.temperature is not None else NOT_GIVEN,
                 stream=True,
                 store=True,  # нужно, чтобы ссылаться на элементы ответа (item_reference) на следующем шаге
                 timeout=httpx.Timeout(request.timeout, connect=10.0),

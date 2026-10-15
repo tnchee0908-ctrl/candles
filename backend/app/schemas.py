@@ -170,9 +170,12 @@ class OrderIn(BaseModel):
     plan_now: bool = True
 
 
+ActualQty = Annotated[Decimal, Field(ge=0, le=Decimal("1000000"), max_digits=18, decimal_places=4)]
+
+
 class CompleteIn(BaseModel):
     # material_id -> фактический расход
-    actual: dict[int, Decimal]
+    actual: dict[int, ActualQty]
 
 
 class ComponentOut(BaseModel):

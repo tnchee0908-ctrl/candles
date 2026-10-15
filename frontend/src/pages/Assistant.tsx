@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import remarkGfm from 'remark-gfm'
 import { api, authHeaders, downloadFile, fetchBlobUrl, postStream, type SseEvent } from '../api'
@@ -336,7 +336,9 @@ function AssistantBlock({ message, onDecide }: { message: ChatMessage; onDecide:
       ))}
       {message.content && (
         <div className="prose-chat text-sm leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={keepSandboxUrls} components={sandboxComponents(message.files)}>
+            {message.content}
+          </ReactMarkdown>
         </div>
       )}
       {message.files.length > 0 && (
@@ -356,6 +358,32 @@ function AssistantBlock({ message, onDecide }: { message: ChatMessage; onDecide:
       <Footer message={message} />
     </div>
   )
+}
+
+// Модель ссылается на свои файлы как sandbox:/mnt/data/имя или /mnt/data/имя. Такой адрес браузеру не открыть,
+// поэтому ссылку превращаем в скачивание файла из чата, а картинку не дублируем — она показана ниже.
+const isSandbox = (url: string) => url.startsWith('sandbox:') || url.startsWith('/mnt/data/')
+
+function keepSandboxUrls(url: string): string {
+  return isSandbox(url) ? url : defaultUrlTransform(url)
+}
+
+function sandboxComponents(files: ChatFile[]): Components {
+  const byName = (href: string) => files.find((f) => href.endsWith(`/${f.filename}`))
+  return {
+    a: ({ href = '', children }) => {
+      if (!isSandbox(href)) return <a href={href} target="_blank" rel="noreferrer">{children}</a>
+      const file = byName(href)
+      return file ? (
+        <button className="text-wax-700 underline" onClick={() => downloadFile(`/api/chat/files/${file.id}`, file.filename)}>
+          {children}
+        </button>
+      ) : (
+        <span>{children}</span>
+      )
+    },
+    img: ({ src = '', alt }) => (isSandbox(src) ? null : <img src={src} alt={alt} />),
+  }
 }
 
 function Footer({ message }: { message: ChatMessage }) {

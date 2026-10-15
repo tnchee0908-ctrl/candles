@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.api.converters import audit_out, batch_row, marking_out
 from app.deps import ActorDep, SessionDep
 from app.errors import NotFound
-from app.models import MarkingAttempt, MarkingReport, ProductionOrder, Supplier
+from app.models import Batch, MarkingAttempt, MarkingReport, ProductionOrder, Supplier
 from app.schemas import (
     AuditPage,
     BatchCard,
@@ -88,9 +88,7 @@ async def create_receipt(body: ReceiptIn, session: SessionDep, actor: ActorDep):
     )
     numbers = [
         b.number
-        for b in await session.scalars(
-            select(batches.Batch).where(batches.Batch.receipt_id == receipt.id).order_by(batches.Batch.id)
-        )
+        for b in await session.scalars(select(Batch).where(Batch.receipt_id == receipt.id).order_by(Batch.id))
     ]
     return ReceiptOut(id=receipt.id, number=receipt.number, batch_numbers=numbers)
 

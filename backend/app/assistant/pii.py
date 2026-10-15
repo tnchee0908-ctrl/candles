@@ -13,7 +13,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Pseudonym, Supplier, User
@@ -144,30 +145,24 @@ class Pseudonymizer:
 
     @classmethod
     async def load(cls, session: AsyncSession) -> "Pseudonymizer":
-        existing = {(p.kind, p.entity_id): p.alias for p in await session.scalars(select(Pseudonym))}
-        entities: list[Entity] = []
         users = list(await session.scalars(select(User).order_by(User.id)))
         suppliers = list(await session.scalars(select(Supplier).order_by(Supplier.id)))
-        created = False
-        for kind, rows, prefix in (("person", users, "PERSON"), ("supplier", suppliers, "SUPPLIER")):
-            counter = (
-                await session.scalar(
-                    select(func.count()).select_from(Pseudonym).where(Pseudonym.kind == kind)
-                )
-                or 0
-            )
-            for row in rows:
-                alias = existing.get((kind, row.id))
-                if alias is None:
-                    counter += 1
-                    alias = f"{prefix}_{counter}"
-                    session.add(Pseudonym(kind=kind, entity_id=row.id, alias=alias))
-                    created = True
-                name = row.full_name if kind == "person" else row.name
-                pattern = person_pattern(name) if kind == "person" else supplier_pattern(name)
-                entities.append(Entity(kind, row.id, name, alias, re.compile(pattern, re.IGNORECASE)))
-        if created:
+        # Номер псевдонима = id сущности: два параллельных диалога не выдадут один номер разным людям.
+        # ON CONFLICT DO NOTHING — если запись уже создал соседний запрос, просто используем её.
+        new_rows = [{"kind": "person", "entity_id": u.id, "alias": f"PERSON_{u.id}"} for u in users] + [
+            {"kind": "supplier", "entity_id": s.id, "alias": f"SUPPLIER_{s.id}"} for s in suppliers
+        ]
+        if new_rows:
+            await session.execute(insert(Pseudonym).values(new_rows).on_conflict_do_nothing())
             await session.commit()
+        aliases = {(p.kind, p.entity_id): p.alias for p in await session.scalars(select(Pseudonym))}
+        entities: list[Entity] = []
+        for u in users:
+            pattern = re.compile(person_pattern(u.full_name), re.IGNORECASE)
+            entities.append(Entity("person", u.id, u.full_name, aliases[("person", u.id)], pattern))
+        for sup in suppliers:
+            pattern = re.compile(supplier_pattern(sup.name), re.IGNORECASE)
+            entities.append(Entity("supplier", sup.id, sup.name, aliases[("supplier", sup.id)], pattern))
         return cls(entities)
 
     def mask(self, text: str) -> str:

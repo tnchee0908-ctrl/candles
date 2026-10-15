@@ -184,12 +184,13 @@ class ChatService:
             facts = [f.text for f in await memory.list_facts(session, actor.user_id)]
             user_alias = pii.alias_for("person", actor.user_id) or "пользователь"
             instructions = build_instructions(actor, user_alias, facts, pii, container_id is not None)
-            history = await self._history(session, conv.id, pii, exclude_id=message_id)
+            conv_id = conv.id
+            history = await self._history(session, conv_id, pii, exclude_id=message_id)
 
             ctx = tools.ToolContext(
                 session=session,
                 actor=actor,
-                conversation=conv,
+                conversation_id=conv.id,
                 pii=pii,
                 assistant_message_id=message_id,
                 sandbox=self.sandbox,
@@ -207,6 +208,7 @@ class ChatService:
                     tools=tools.specs(),
                     code_container=container_id,
                     timeout=self.settings.llm_timeout_s,
+                    temperature=self.settings.llm_temperature,
                 )
                 async for event in self.llm.stream(request, stats):
                     if isinstance(event, TextDelta):
@@ -274,7 +276,9 @@ class ChatService:
                 state.text += "\n\n_Слишком много шагов, ответ остановлен. Уточните вопрос._"
 
             if container_id and state.code:
-                await self._collect_generated(session, conv, message_id, container_id, pii, state, emit)
+                await self._collect_generated(
+                    session, conv_id, actor.user_id, message_id, container_id, pii, state, emit
+                )
 
     # ---------- песочница ----------
 
@@ -310,7 +314,8 @@ class ChatService:
     async def _collect_generated(
         self,
         session: AsyncSession,
-        conv: Conversation,
+        conv_id: int,
+        user_id: int,
         message_id: int,
         container_id: str,
         pii: Pseudonymizer,
@@ -325,24 +330,37 @@ class ChatService:
         known = set(
             await session.scalars(
                 select(ChatFile.container_path).where(
-                    ChatFile.conversation_id == conv.id, ChatFile.container_path.is_not(None)
+                    ChatFile.conversation_id == conv_id, ChatFile.container_path.is_not(None)
                 )
             )
         )
-        for f in files:
-            if f.source == "user" or f.path in known or f.size > 20 * 1024 * 1024:
-                continue
+        new_files = [
+            f
+            for f in files
+            if f.source != "user" and f.path not in known and (f.size or 0) <= 20 * 1024 * 1024
+        ]
+        # Code Interpreter перехватывает незакрытую фигуру как cfile_*.png. Если модель сохранила
+        # картинку и сама, перехваченная копия — дубль.
+        if any(_is_image(f.path) and not _captured(f.path) for f in new_files):
+            new_files = [f for f in new_files if not (_is_image(f.path) and _captured(f.path))]
+        for f in new_files:
             try:
                 data = await self.sandbox.download(container_id, f.id)
             except SandboxError:
                 continue
             filename = f.path.rsplit("/", 1)[-1]
+            if is_chart_spec(filename, data):
+                continue  # служебная заготовка интерактивного графика Code Interpreter, пользователю не нужна
             mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            if filename.startswith("cfile_") and mime.startswith("image/"):
+                # Картинка, перехваченная из plt.show(): даём человеческое имя вместо технического.
+                n = sum(1 for x in state.files if x["mime"].startswith("image/")) + 1
+                filename = f"график_{n}{Path(filename).suffix}"
             data = restore_generated(filename, data, pii)
             row = ChatFile(
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 message_id=message_id,
-                user_id=conv.user_id,
+                user_id=user_id,
                 direction="generated",
                 filename=filename,
                 mime=mime,
@@ -425,7 +443,12 @@ class ChatService:
 
 
 async def confirm_action(session: AsyncSession, user: User, action_id: int) -> PendingAction:
-    """Пользователь нажал «Подтвердить». Вызывается тот же сервис, что и у кнопки «Создать задание»."""
+    """Пользователь нажал «Подтвердить». Вызывается тот же сервис, что и у кнопки «Создать задание».
+
+    Строка действия заблокирована (FOR UPDATE) до конца транзакции, а задание создаётся и действие
+    помечается подтверждённым одним коммитом. Поэтому двойной клик не создаст два задания:
+    второй запрос дождётся блокировки и увидит статус «confirmed».
+    """
     action = await session.scalar(
         select(PendingAction).where(PendingAction.id == action_id).with_for_update()
     )
@@ -446,6 +469,7 @@ async def confirm_action(session: AsyncSession, user: User, action_id: int) -> P
             planned_date=date.fromisoformat(p["planned_date"]),
             workshop=p["workshop"],
             comment=p.get("comment"),
+            commit=False,
         )
     except (DomainError, Forbidden) as exc:
         await session.rollback()
@@ -583,6 +607,25 @@ def sanitize_upload(f: ChatFile, pii: Pseudonymizer) -> bytes:
     if ext == ".xlsx":
         return _map_xlsx(f.data, pii.mask)
     return f.data
+
+
+def _is_image(path: str) -> bool:
+    return (mimetypes.guess_type(path)[0] or "").startswith("image/")
+
+
+def _captured(path: str) -> bool:
+    return path.rsplit("/", 1)[-1].startswith("cfile_")
+
+
+def is_chart_spec(filename: str, data: bytes) -> bool:
+    """JSON-описание графика, которое Code Interpreter создаёт рядом с картинкой ({type, labels, datasets})."""
+    if not filename.endswith(".json"):
+        return False
+    try:
+        spec = json.loads(data)
+    except ValueError:
+        return False
+    return isinstance(spec, dict) and {"labels", "datasets"} <= spec.keys()
 
 
 def restore_generated(filename: str, data: bytes, pii: Pseudonymizer) -> bytes:

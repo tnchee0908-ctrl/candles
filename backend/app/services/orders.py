@@ -267,8 +267,13 @@ async def create_and_plan(
     planned_date: date,
     workshop: int = 1,
     comment: str | None = None,
+    commit: bool = True,
 ) -> PlanResult:
-    """Создать и сразу запланировать — одна транзакция. Этот же код вызывает кнопка и ассистент."""
+    """Создать и сразу запланировать — одна транзакция. Этот же код вызывает кнопка и ассистент.
+
+    commit=False — вызывающий код сам завершит транзакцию (подтверждение действия ассистента
+    помечает действие выполненным в той же транзакции, что и создание задания).
+    """
     order = await create_order(
         session,
         actor,
@@ -279,7 +284,8 @@ async def create_and_plan(
         comment=comment,
     )
     result = await plan_order(session, actor, order.id, commit=False)
-    await session.commit()
+    if commit:
+        await session.commit()
     return result
 
 

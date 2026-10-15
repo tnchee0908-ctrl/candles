@@ -24,12 +24,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     llm_primary_model: str = "gpt-4.1-mini"
     llm_fallback_model: str = "gpt-4o-mini"
-    llm_timeout_s: float = 60.0
+    llm_timeout_s: float = 120.0  # с запасом на Code Interpreter
     llm_max_tool_steps: int = 8
+    # Низкая температура: ответы по учётным данным должны быть повторяемыми, а не «творческими».
+    llm_temperature: float = 0.2
     # Модель, которая оценивает ответы в прогоне эталонных вопросов.
     llm_judge_model: str = "gpt-4.1-mini"
-
-    files_dir: str = "/data/files"
 
 
 @lru_cache

@@ -60,6 +60,7 @@ class ScriptedProvider:
 class FakeSandbox:
     def __init__(self):
         self.files: dict[str, bytes] = {}
+        self.generated: dict[str, bytes] = {}  # файлы, «созданные кодом модели»
 
     async def ensure(self, container_id, name):
         return container_id or "cntr_test", container_id is None
@@ -70,7 +71,10 @@ class FakeSandbox:
         return path
 
     async def list_files(self, container_id):
-        return [SandboxFile(id=p, path=p, source="user", size=len(d)) for p, d in self.files.items()]
+        # Как и OpenAI, для файлов модели размер может не прийти (None).
+        return [SandboxFile(id=p, path=p, source="user", size=len(d)) for p, d in self.files.items()] + [
+            SandboxFile(id=p, path=p, source="assistant", size=None) for p in self.generated
+        ]
 
     async def download(self, container_id, file_id):
-        return self.files[file_id]
+        return {**self.files, **self.generated}[file_id]

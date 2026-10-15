@@ -21,7 +21,7 @@ class SandboxFile:
     id: str
     path: str
     source: str
-    size: int
+    size: int | None  # OpenAI не всегда сообщает размер файлов, созданных кодом
 
 
 class Sandbox(Protocol):
