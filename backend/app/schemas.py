@@ -87,10 +87,16 @@ class ReceiptIn(BaseModel):
     lines: list[ReceiptLineIn] = Field(min_length=1, max_length=100)
 
 
+class BatchRef(BaseModel):
+    id: int
+    number: str
+
+
 class ReceiptOut(BaseModel):
     id: int
     number: str
     batch_numbers: list[str]
+    batches: list[BatchRef]
 
 
 class BatchRow(BaseModel):
@@ -201,6 +207,8 @@ class OrderRow(BaseModel):
     status: str
     status_title: str
     light: Literal["green", "yellow", "red"]
+    # Коротко о дефиците для списка: «20,324 кг «Воск кокосовый»» (+ «и ещё N»)
+    deficit_summary: str | None = None
 
 
 class ReservationOut(BaseModel):
@@ -223,6 +231,9 @@ class MarkingOut(BaseModel):
     id: int
     order_id: int
     order_number: str | None = None
+    product: str | None = None
+    qty: int | None = None
+    completed_at: datetime | None = None
     status: str
     attempts: int
     next_attempt_at: datetime | None

@@ -16,4 +16,9 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
     },
   },
+  {
+    // Дизайн-система и утилиты экспортируют словари статусов рядом с компонентами — это осознанно.
+    files: ['src/components/**/*.{ts,tsx}', 'src/lib/**/*.ts', 'src/auth.tsx'],
+    rules: { 'react-refresh/only-export-components': 'off' },
+  },
 )

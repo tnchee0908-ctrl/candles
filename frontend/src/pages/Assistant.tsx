@@ -1,12 +1,28 @@
+import { CircleCheck } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import remarkGfm from 'remark-gfm'
-import { api, authHeaders, downloadFile, fetchBlobUrl, postStream, type SseEvent } from '../api'
-import PreviewTable from '../components/PreviewTable'
-import { Button, ErrorBox } from '../components/ui'
-import { day } from '../format'
-import type { ChatAction, ChatFile, ChatMessage, CodeRun, Conversation } from '../types'
+import { api, authHeaders, downloadFile, fetchBlobUrl, postStream, type SseEvent } from '@/api'
+import {
+  AssistantFile,
+  AssistantMessage,
+  ChatEmpty,
+  CodeRunBlock,
+  Composer,
+  ConfirmActionCard,
+  ConversationList,
+  MessageFooter,
+  UserMessage,
+  fileKind,
+  type ChatFile as UiFile,
+  type ConfirmAction,
+  type ResponseStatus,
+} from '@/components/chat'
+import { Banner } from '@/components/ui'
+import { formatDateTime } from '@/lib/format'
+import { levelByQty } from '@/lib/reserve'
+import type { ChatAction, ChatFile, ChatMessage, Conversation } from '@/types'
 
 const TOOL_TITLES: Record<string, string> = {
   get_material_stock: 'остатки',
@@ -22,31 +38,114 @@ const TOOL_TITLES: Record<string, string> = {
   export_dataset: 'выгрузка в песочницу',
 }
 
-const EXAMPLES = [
-  'Чего не хватит на задания этой недели?',
-  'Запланируй 200 свечей «Лаванда» на пятницу',
-  'Построй график расхода воска по неделям за квартал',
-  'Как изменится себестоимость свечи «Лаванда», если соевый воск подорожает на 15%?',
-]
+function dayGroup(iso: string): string {
+  const d = new Date(iso)
+  const today = new Date()
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+  if (d.getTime() >= start) return 'Сегодня'
+  if (d.getTime() >= start - 86_400_000) return 'Вчера'
+  return 'Ранее'
+}
 
+function responseStatus(m: ChatMessage): ResponseStatus {
+  if (m.status === 'streaming') {
+    const running = m.running_tools?.[m.running_tools.length - 1]
+    if (running) return { kind: 'tool', tool: running, label: `Выполняется инструмент: ${TOOL_TITLES[running] ?? running}…` }
+    return m.content ? { kind: 'streaming' } : { kind: 'thinking' }
+  }
+  if (m.status === 'interrupted') return { kind: 'interrupted', message: m.error ?? undefined }
+  if (m.status === 'error') return { kind: 'error', message: m.error ?? 'Не удалось получить ответ.' }
+  return { kind: 'done' }
+}
+
+function toConfirmAction(a: ChatAction, submitting: boolean): ConfirmAction {
+  const p = a.preview
+  const state: ConfirmAction['state'] = submitting
+    ? { kind: 'submitting' }
+    : a.status === 'confirmed'
+      ? {
+          kind: 'confirmed',
+          at: a.decided_at ? formatDateTime(a.decided_at) : '',
+          orderNo: a.result?.order_number ?? '',
+          orderUrl: `/orders/${a.result?.order_id}`,
+          deficitNote: a.result?.shortage ? `Дефицит: ${a.result.shortage}.` : undefined,
+        }
+      : a.status === 'rejected'
+        ? { kind: 'rejected' }
+        : a.status === 'failed'
+          ? { kind: 'failed', error: a.result?.error ?? 'Действие не выполнено.' }
+          : { kind: 'pending' }
+  return {
+    id: `action-${a.id}`,
+    title: p.title,
+    warning: p.has_shortage ? 'Будет частичный резерв: запустить задание можно только после дорезервирования.' : undefined,
+    state,
+    rows: p.components.map((r) => {
+      const deficit = Number(r.shortage)
+      return {
+        level: levelByQty(Number(r.required), Number(r.free_now)),
+        material: r.material,
+        need: Number(r.required),
+        free: Number(r.free_now),
+        deficit: deficit > 0 ? deficit : undefined,
+        unit: r.unit,
+      }
+    }),
+  }
+}
+
+// Модель ссылается на свои файлы как sandbox:/mnt/data/имя или /mnt/data/имя. Такой адрес браузеру
+// не открыть, поэтому ссылку превращаем в скачивание файла из чата, а картинку не дублируем.
+const isSandbox = (url: string) => url.startsWith('sandbox:') || url.startsWith('/mnt/data/')
+const keepSandboxUrls = (url: string) => (isSandbox(url) ? url : defaultUrlTransform(url))
+
+function markdownComponents(files: ChatFile[]): Components {
+  return {
+    a: ({ href = '', children }) => {
+      if (!isSandbox(href))
+        return (
+          <a href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        )
+      const file = files.find((f) => href.endsWith(`/${f.filename}`))
+      return file ? (
+        <button
+          className="text-accent hover:underline"
+          onClick={() => downloadFile(`/api/chat/files/${file.id}`, file.filename)}
+        >
+          {children}
+        </button>
+      ) : (
+        <span>{children}</span>
+      )
+    },
+    img: ({ src = '', alt }) => (isSandbox(src) ? null : <img src={src} alt={alt} />),
+  }
+}
+
+/** 18–20 — Ассистент: колонка диалогов, лента со стримингом ответа, поле ввода внизу. */
 export default function AssistantPage() {
   const { conversationId } = useParams()
   const navigate = useNavigate()
   const convId = conversationId ? Number(conversationId) : null
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [text, setText] = useState('')
-  const [attachments, setAttachments] = useState<ChatFile[]>([])
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState<number | null>(null)
+  const [previews, setPreviews] = useState<Record<number, string>>({})
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const fileInput = useRef<HTMLInputElement>(null)
-  // Диалог, который мы только что создали сами при отправке: его сообщения уже на экране, перечитывать не надо.
+  // Диалог, который мы только что создали сами при отправке: его сообщения уже на экране.
   const justCreated = useRef<number | null>(null)
+  const requestedPreviews = useRef(new Set<number>())
+  const previewUrls = useRef<string[]>([])
 
   const loadConversations = useCallback(() => {
-    api<Conversation[]>('/api/chat/conversations').then(setConversations).catch((e) => setError(e.message))
+    api<Conversation[]>('/api/chat/conversations')
+      .then(setConversations)
+      .catch((e) => setError(e.message))
   }, [])
 
   const loadMessages = useCallback(async (id: number) => {
@@ -71,6 +170,26 @@ export default function AssistantPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Картинки отдаются только с токеном — загружаем их как blob и показываем через object URL.
+  useEffect(() => {
+    for (const m of messages) {
+      for (const f of m.files) {
+        if (!f.mime.startsWith('image/') || requestedPreviews.current.has(f.id)) continue
+        requestedPreviews.current.add(f.id)
+        fetchBlobUrl(`/api/chat/files/${f.id}`)
+          .then((url) => {
+            previewUrls.current.push(url)
+            setPreviews((p) => ({ ...p, [f.id]: url }))
+          })
+          .catch(() => requestedPreviews.current.delete(f.id))
+      }
+    }
+  }, [messages])
+  useEffect(() => {
+    const urls = previewUrls.current
+    return () => urls.forEach((u) => URL.revokeObjectURL(u))
+  }, [])
+
   const patchLast = (fn: (m: ChatMessage) => ChatMessage) =>
     setMessages((ms) => (ms.length ? [...ms.slice(0, -1), fn(ms[ms.length - 1])] : ms))
 
@@ -91,16 +210,23 @@ export default function AssistantPage() {
         patchLast((m) => ({ ...m, model: e.model as string }))
         break
       case 'tool':
-        if (e.status === 'start') patchLast((m) => ({ ...m, running_tools: [...(m.running_tools ?? []), e.name as string] }))
+        if (e.status === 'start')
+          patchLast((m) => ({ ...m, running_tools: [...(m.running_tools ?? []), e.name as string] }))
         else
           patchLast((m) => ({
             ...m,
             running_tools: (m.running_tools ?? []).filter((t) => t !== e.name),
-            tool_calls: [...m.tool_calls, { name: e.name as string, ok: e.status === 'ok', summary: e.summary as string, arguments: null }],
+            tool_calls: [
+              ...m.tool_calls,
+              { name: e.name as string, ok: e.status === 'ok', summary: e.summary as string, arguments: null },
+            ],
           }))
         break
       case 'code':
-        patchLast((m) => ({ ...m, code: [...m.code, { code: e.code as string, logs: e.logs as string, error: Boolean(e.error) }] }))
+        patchLast((m) => ({
+          ...m,
+          code: [...m.code, { code: e.code as string, logs: e.logs as string, error: Boolean(e.error) }],
+        }))
         break
       case 'action':
         patchLast((m) => ({ ...m, actions: [...m.actions, e.action as ChatAction] }))
@@ -125,31 +251,52 @@ export default function AssistantPage() {
     return conv.id
   }
 
-  async function send(question = text) {
-    const q = question.trim()
+  async function uploadFile(id: number, file: File): Promise<ChatFile> {
+    const form = new FormData()
+    form.append('file', file)
+    const resp = await fetch(`/api/chat/conversations/${id}/files`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    })
+    const body = await resp.json()
+    if (!resp.ok) throw new Error(body.detail ?? 'Не удалось загрузить файл')
+    return body as ChatFile
+  }
+
+  async function send(question: string, files: File[] = []) {
+    const q = question.trim() || (files.length ? 'Посмотри загруженный файл.' : '')
     if (!q || streaming) return
     setError(null)
-    const id = await ensureConversation()
-    const files = attachments
-    setText('')
-    setAttachments([])
-    const now = new Date().toISOString()
+    let id: number
+    let uploaded: ChatFile[]
+    try {
+      id = await ensureConversation()
+      uploaded = await Promise.all(files.map((f) => uploadFile(id, f)))
+    } catch (e) {
+      setError((e as Error).message)
+      return
+    }
     setMessages((ms) => [
       ...ms,
-      { id: -1, role: 'user', content: q, status: 'complete', model: null, tool_calls: [], code: [], files, actions: [], error: null, created_at: now },
+      { id: -1, role: 'user', content: q, status: 'complete', model: null, tool_calls: [], code: [], files: uploaded, actions: [], error: null },
       { id: -2, role: 'assistant', content: '', status: 'streaming', model: null, tool_calls: [], code: [], files: [], actions: [], error: null, running_tools: [] },
     ])
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
     try {
-      await postStream(`/api/chat/conversations/${id}/messages`, { text: q, file_ids: files.map((f) => f.id) }, onEvent, controller.signal)
+      await postStream(
+        `/api/chat/conversations/${id}/messages`,
+        { text: q, file_ids: uploaded.map((f) => f.id) },
+        onEvent,
+        controller.signal,
+      )
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
         setError((e as Error).message)
-        // Сервер отказал до начала ответа — убираем черновые пузыри (у них отрицательные id).
+        // Сервер отказал до начала ответа — убираем черновые сообщения (у них отрицательные id).
         setMessages((ms) => ms.filter((m) => m.id > 0))
-        setText(q)
       }
     } finally {
       setStreaming(false)
@@ -165,335 +312,124 @@ export default function AssistantPage() {
     abortRef.current?.abort()
   }
 
-  async function upload(file: File) {
-    try {
-      const id = await ensureConversation()
-      const form = new FormData()
-      form.append('file', file)
-      const resp = await fetch(`/api/chat/conversations/${id}/files`, { method: 'POST', headers: authHeaders(), body: form })
-      const body = await resp.json()
-      if (!resp.ok) throw new Error(body.detail ?? 'Не удалось загрузить файл')
-      setAttachments((a) => [...a, body as ChatFile])
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-
   async function decide(action: ChatAction, decision: 'confirm' | 'reject') {
+    setConfirming(action.id)
     try {
       await api(`/api/chat/actions/${action.id}/${decision}`, { method: 'POST' })
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setConfirming(null)
     }
     if (convId) loadMessages(convId)
   }
 
-  async function removeConversation(id: number) {
-    await api(`/api/chat/conversations/${id}`, { method: 'DELETE' })
-    loadConversations()
-    if (id === convId) navigate('/assistant')
-  }
-
-  return (
-    <div className="-m-6 flex h-screen">
-      <div className="flex w-60 shrink-0 flex-col border-r border-stone-200 bg-white/60">
-        <div className="p-3">
-          <Button className="w-full" onClick={() => navigate('/assistant')}>
-            + Новый диалог
-          </Button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-2 pb-3">
-          {conversations.map((c) => (
-            <div
-              key={c.id}
-              className={`group flex items-center justify-between rounded-md px-2 py-1.5 text-sm ${c.id === convId ? 'bg-wax-100' : 'hover:bg-stone-100'}`}
-            >
-              <Link to={`/assistant/${c.id}`} className="min-w-0 flex-1 truncate">
-                {c.title}
-              </Link>
-              <button className="ml-1 hidden text-stone-400 hover:text-red-600 group-hover:block" onClick={() => removeConversation(c.id)} title="Удалить">
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          <div className="mx-auto max-w-3xl space-y-5">
-            {!messages.length && (
-              <div className="pt-10 text-center">
-                <h1 className="text-xl font-semibold">Ассистент мастерской</h1>
-                <p className="mt-1 text-sm text-stone-500">
-                  Отвечает по данным учёта, считает в Code Interpreter и готовит задания — изменения только после вашего «Подтвердить».
-                </p>
-                <div className="mx-auto mt-6 grid max-w-xl gap-2 sm:grid-cols-2">
-                  {EXAMPLES.map((ex) => (
-                    <button key={ex} onClick={() => send(ex)} className="rounded-lg border border-stone-200 bg-white p-3 text-left text-sm hover:border-wax-500">
-                      {ex}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {messages.map((m, i) =>
-              m.role === 'user' ? (
-                <UserBubble key={`${m.id}-${i}`} message={m} />
-              ) : (
-                <AssistantBlock key={`${m.id}-${i}`} message={m} onDecide={decide} />
-              ),
-            )}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <div className="border-t border-stone-200 bg-white px-6 py-3">
-          <div className="mx-auto max-w-3xl">
-            <ErrorBox error={error} />
-            {attachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {attachments.map((f) => (
-                  <span key={f.id} className="rounded-full bg-stone-100 px-2 py-0.5 text-xs">
-                    📎 {f.filename}
-                    <button className="ml-1 text-stone-400" onClick={() => setAttachments((a) => a.filter((x) => x.id !== f.id))}>
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="flex items-end gap-2">
-              <input
-                ref={fileInput}
-                type="file"
-                accept=".csv,.xlsx,.txt,.tsv,.json"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) upload(f)
-                  e.target.value = ''
-                }}
-              />
-              <Button variant="ghost" title="Прикрепить CSV/XLSX" onClick={() => fileInput.current?.click()} disabled={streaming}>
-                📎
-              </Button>
-              <textarea
-                className="max-h-40 min-h-[42px] flex-1 resize-y rounded-md border border-stone-300 px-3 py-2 text-sm focus:border-wax-500 focus:outline-none"
-                rows={1}
-                placeholder="Спросите про остатки, дефицит, себестоимость… (Enter — отправить, Shift+Enter — новая строка)"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    send()
-                  }
-                }}
-              />
-              {streaming ? (
-                <Button variant="danger" onClick={stop}>
-                  ■ Остановить
-                </Button>
-              ) : (
-                <Button onClick={() => send()} disabled={!text.trim()}>
-                  Отправить
-                </Button>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function UserBubble({ message }: { message: ChatMessage }) {
-  return (
-    <div className="flex justify-end">
-      <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-wax-600 px-4 py-2 text-sm text-white">
-        <div className="whitespace-pre-wrap">{message.content}</div>
-        {message.files.length > 0 && (
-          <div className="mt-1 text-xs text-wax-100">{message.files.map((f) => `📎 ${f.filename}`).join(', ')}</div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function AssistantBlock({ message, onDecide }: { message: ChatMessage; onDecide: (a: ChatAction, d: 'confirm' | 'reject') => Promise<void> }) {
-  if (message.system_note) {
-    return <div className="text-center text-xs text-stone-500">— {message.content} —</div>
-  }
-  const thinking = message.status === 'streaming' && !message.content && !message.running_tools?.length
-  return (
-    <div className="rounded-xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
-      {thinking && <div className="animate-pulse text-sm text-stone-400">Думаю…</div>}
-      {message.running_tools?.map((t, i) => (
-        <div key={i} className="mb-1 animate-pulse text-xs text-violet-700">
-          ⚙ {TOOL_TITLES[t] ?? t}…
-        </div>
-      ))}
-      {message.content && (
-        <div className="prose-chat text-sm leading-relaxed">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={keepSandboxUrls} components={sandboxComponents(message.files)}>
-            {message.content}
-          </ReactMarkdown>
-        </div>
-      )}
-      {message.files.length > 0 && (
-        <div className="mt-3 space-y-2">
-          {message.files.map((f) => (
-            <FileView key={f.id} file={f} />
-          ))}
-        </div>
-      )}
-      {message.actions.map((a) => (
-        <ActionCard key={a.id} action={a} onDecide={onDecide} />
-      ))}
-      {message.status === 'interrupted' && (
-        <div className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">⏸ {message.error ?? 'Ответ прерван'}</div>
-      )}
-      {message.status === 'error' && <div className="mt-2 rounded bg-red-50 px-2 py-1 text-xs text-red-800">⚠ {message.error}</div>}
-      <Footer message={message} />
-    </div>
-  )
-}
-
-// Модель ссылается на свои файлы как sandbox:/mnt/data/имя или /mnt/data/имя. Такой адрес браузеру не открыть,
-// поэтому ссылку превращаем в скачивание файла из чата, а картинку не дублируем — она показана ниже.
-const isSandbox = (url: string) => url.startsWith('sandbox:') || url.startsWith('/mnt/data/')
-
-function keepSandboxUrls(url: string): string {
-  return isSandbox(url) ? url : defaultUrlTransform(url)
-}
-
-function sandboxComponents(files: ChatFile[]): Components {
-  const byName = (href: string) => files.find((f) => href.endsWith(`/${f.filename}`))
-  return {
-    a: ({ href = '', children }) => {
-      if (!isSandbox(href)) return <a href={href} target="_blank" rel="noreferrer">{children}</a>
-      const file = byName(href)
-      return file ? (
-        <button className="text-wax-700 underline" onClick={() => downloadFile(`/api/chat/files/${file.id}`, file.filename)}>
-          {children}
-        </button>
-      ) : (
-        <span>{children}</span>
-      )
-    },
-    img: ({ src = '', alt }) => (isSandbox(src) ? null : <img src={src} alt={alt} />),
-  }
-}
-
-function Footer({ message }: { message: ChatMessage }) {
-  if (!message.model && !message.tool_calls.length && !message.code.length) return null
-  return (
-    <div className="mt-3 space-y-1.5 border-t border-stone-100 pt-2 text-xs text-stone-500">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {message.model && (
-          <span className="rounded bg-stone-100 px-1.5 py-0.5 font-mono">
-            {message.model}
-            {message.fallback_used && <span className="ml-1 text-amber-700">(запасная)</span>}
-          </span>
-        )}
-        {message.tool_calls.map((t, i) => (
-          <span
-            key={i}
-            title={`${t.summary}${t.arguments ? '\n' + JSON.stringify(t.arguments, null, 1) : ''}`}
-            className={`rounded px-1.5 py-0.5 ${t.ok ? 'bg-violet-50 text-violet-700' : 'bg-red-50 text-red-700'}`}
-          >
-            {t.ok ? '✓' : '✗'} {t.name}
-          </span>
-        ))}
-        {message.code.length > 0 && <span className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-700">✓ code_interpreter ×{message.code.length}</span>}
-      </div>
-      {message.code.map((c, i) => (
-        <CodeView key={i} run={c} index={i} />
-      ))}
-    </div>
-  )
-}
-
-function CodeView({ run, index }: { run: CodeRun; index: number }) {
-  return (
-    <details className="rounded border border-stone-200">
-      <summary className="cursor-pointer px-2 py-1 text-stone-600">
-        Код, выполненный моделью #{index + 1} {run.error && <span className="text-red-600">(ошибка)</span>}
-      </summary>
-      <pre className="max-h-80 overflow-auto bg-stone-900 p-3 text-[11px] leading-snug text-stone-100">{run.code}</pre>
-      {run.logs && <pre className="max-h-40 overflow-auto bg-stone-50 p-2 text-[11px] text-stone-700">{run.logs}</pre>}
-    </details>
-  )
-}
-
-function FileView({ file }: { file: ChatFile }) {
-  const [src, setSrc] = useState<string | null>(null)
-  const isImage = file.mime.startsWith('image/')
-  useEffect(() => {
-    if (!isImage) return
-    let url: string | null = null
-    fetchBlobUrl(`/api/chat/files/${file.id}`).then((u) => {
-      url = u
-      setSrc(u)
-    })
-    return () => {
-      if (url) URL.revokeObjectURL(url)
+  async function removeConversation(id: string) {
+    try {
+      await api(`/api/chat/conversations/${id}`, { method: 'DELETE' })
+    } catch (e) {
+      setError((e as Error).message)
     }
-  }, [file.id, isImage])
-  return (
-    <div>
-      {isImage && src && <img src={src} alt={file.filename} className="max-h-96 rounded border border-stone-200" />}
-      <button className="mt-1 text-xs text-wax-700 hover:underline" onClick={() => downloadFile(`/api/chat/files/${file.id}`, file.filename)}>
-        ⬇ {file.filename}
-      </button>
-    </div>
-  )
-}
-
-function ActionCard({ action, onDecide }: { action: ChatAction; onDecide: (a: ChatAction, d: 'confirm' | 'reject') => Promise<void> }) {
-  const [busy, setBusy] = useState(false)
-  const p = action.preview
-  const decide = async (d: 'confirm' | 'reject') => {
-    setBusy(true)
-    await onDecide(action, d)
-    setBusy(false)
+    loadConversations()
+    if (Number(id) === convId) navigate('/assistant')
   }
+
+  const asUiFile = (f: ChatFile): UiFile => ({
+    kind: fileKind(f.filename, f.mime),
+    name: f.filename,
+    url: previews[f.id],
+    onDownload: () => downloadFile(`/api/chat/files/${f.id}`, f.filename),
+  })
+
   return (
-    <div className="mt-3 rounded-lg border-2 border-wax-200 bg-wax-50 p-3">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-wax-700">Требуется подтверждение</div>
-      <div className="mb-2 text-sm font-medium">{p.title}</div>
-      <div className="rounded border border-stone-200 bg-white">
-        <PreviewTable rows={p.components} />
-      </div>
-      {p.has_shortage && (
-        <div className="mt-2 text-xs text-amber-800">Будет частичный резерв: запустить задание можно будет только после дорезервирования.</div>
-      )}
-      <div className="mt-3 flex items-center gap-2">
-        {action.status === 'pending' ? (
-          <>
-            <Button disabled={busy} onClick={() => decide('confirm')}>
-              Подтвердить
-            </Button>
-            <Button variant="secondary" disabled={busy} onClick={() => decide('reject')}>
-              Отклонить
-            </Button>
-            <span className="text-xs text-stone-500">До нажатия ничего не изменится · дата {day(p.planned_date)}</span>
-          </>
-        ) : action.status === 'confirmed' ? (
-          <span className="text-sm text-emerald-700">
-            ✓ Подтверждено:{' '}
-            <Link className="underline" to={`/orders/${action.result?.order_id}`}>
-              задание {action.result?.order_number}
-            </Link>
-            {action.result?.shortage && <span className="text-amber-700"> · дефицит: {action.result.shortage}</span>}
-          </span>
-        ) : action.status === 'rejected' ? (
-          <span className="text-sm text-stone-500">Отклонено</span>
+    <div className="flex h-screen min-w-0 flex-1">
+      <ConversationList
+        items={conversations.map((c) => ({ id: String(c.id), title: c.title, group: dayGroup(c.updated_at) }))}
+        activeId={convId ? String(convId) : undefined}
+        onSelect={(id) => navigate(`/assistant/${id}`)}
+        onNew={() => navigate('/assistant')}
+        onDelete={removeConversation}
+      />
+
+      <section aria-label="Диалог" className="flex h-screen min-w-0 flex-1 flex-col">
+        {messages.length === 0 ? (
+          <ChatEmpty onPick={(text) => send(text)} />
         ) : (
-          <span className="text-sm text-red-700">Не выполнено: {action.result?.error}</span>
+          <div className="flex-1 overflow-y-auto px-8 pb-8 pt-7">
+            <div className="mx-auto flex max-w-chat flex-col gap-7">
+              {messages.map((m, i) => {
+                const key = `${m.id}-${i}`
+                if (m.role === 'user') return <UserMessage key={key} text={m.content} files={m.files.map(asUiFile)} />
+                if (m.system_note)
+                  return (
+                    <div key={key} className="flex items-center gap-2 self-center text-xs text-fg-muted">
+                      <CircleCheck className="size-3.5 text-fg-subtle" aria-hidden />
+                      {m.content}
+                    </div>
+                  )
+                const status = responseStatus(m)
+                const hasAttachments = m.files.length + m.actions.length + m.code.length > 0
+                return (
+                  <AssistantMessage
+                    key={key}
+                    status={status}
+                    attachments={
+                      hasAttachments ? (
+                        <>
+                          {m.files.map((f) => (
+                            <AssistantFile key={f.id} file={asUiFile(f)} />
+                          ))}
+                          {m.actions.map((a) => (
+                            <ConfirmActionCard
+                              key={a.id}
+                              action={toConfirmAction(a, confirming === a.id)}
+                              onConfirm={() => decide(a, 'confirm')}
+                              onReject={() => decide(a, 'reject')}
+                            />
+                          ))}
+                          {m.code.map((c, j) => (
+                            <CodeRunBlock key={j} index={j + 1} run={{ code: c.code, output: c.logs || undefined }} />
+                          ))}
+                        </>
+                      ) : undefined
+                    }
+                    footer={
+                      m.model && status.kind !== 'thinking' ? (
+                        <MessageFooter
+                          model={m.model}
+                          fallback={m.fallback_used}
+                          tools={m.tool_calls.map((t) => ({ name: t.name, ok: t.ok, detail: t.summary }))}
+                          codeRuns={m.code.length}
+                        />
+                      ) : undefined
+                    }
+                  >
+                    {m.content ? (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        urlTransform={keepSandboxUrls}
+                        components={markdownComponents(m.files)}
+                      >
+                        {m.content}
+                      </ReactMarkdown>
+                    ) : undefined}
+                  </AssistantMessage>
+                )
+              })}
+              <div ref={bottomRef} />
+            </div>
+          </div>
         )}
-      </div>
+
+        {error && (
+          <div className="px-8 pb-1">
+            <Banner tone="error" className="mx-auto max-w-chat" onDismiss={() => setError(null)}>
+              {error}
+            </Banner>
+          </div>
+        )}
+        <Composer responding={streaming} onSend={(text, files) => send(text, files)} onStop={stop} />
+      </section>
     </div>
   )
 }

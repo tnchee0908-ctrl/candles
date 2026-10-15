@@ -1,11 +1,12 @@
+import { Flame } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { useAuth } from '../auth'
-import { Button, ErrorBox, Field, inputCls } from '../components/ui'
+import { useAuth } from '@/auth'
+import { Banner, Button, Field, Input, Tag } from '@/components/ui'
 
 const DEMO = [
-  { username: 'sklad', password: 'sklad123', title: 'Кладовщик', name: 'Петров И. С.' },
-  { username: 'tech', password: 'tech123', title: 'Технолог', name: 'Смирнова А. О.' },
-  { username: 'boss', password: 'boss123', title: 'Руководитель', name: 'Кузнецов Д. П.' },
+  { title: 'Кладовщик', name: 'Петров И. С.', login: 'sklad', password: 'sklad123' },
+  { title: 'Технолог', name: 'Смирнова А. О.', login: 'tech', password: 'tech123' },
+  { title: 'Руководитель', name: 'Кузнецов Д. П.', login: 'boss', password: 'boss123' },
 ]
 
 export default function LoginPage() {
@@ -15,8 +16,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  async function submit(u = username, p = password, e?: FormEvent) {
-    e?.preventDefault()
+  async function signIn(u: string, p: string) {
     setBusy(true)
     setError(null)
     try {
@@ -28,48 +28,73 @@ export default function LoginPage() {
     }
   }
 
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    signIn(username, password)
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <div className="w-full max-w-sm rounded-xl border border-wax-200 bg-white p-6 shadow-sm">
-        <div className="mb-5 flex items-center gap-3">
-          <img src="/favicon.svg" alt="" className="h-10 w-10" />
+    <main className="flex min-h-screen items-center justify-center px-4 py-12">
+      <div className="w-full max-w-[380px]">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex size-9 items-center justify-center rounded-lg bg-accent text-white">
+            <Flame className="size-[18px]" aria-hidden />
+          </div>
           <div>
             <h1 className="text-lg font-semibold">Свечная мастерская</h1>
-            <p className="text-sm text-stone-500">Учёт склада, производства и ИИ-ассистент</p>
+            <p className="text-sm text-fg-muted">Учёт склада, производства и ИИ-ассистент</p>
           </div>
         </div>
-        <ErrorBox error={error} />
-        <form onSubmit={(e) => submit(username, password, e)} className="space-y-3">
-          <Field label="Логин">
-            <input className={inputCls} value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+
+        <form onSubmit={submit} className="flex flex-col gap-3.5 rounded-lg border border-border bg-surface p-6">
+          {error && <Banner tone="error">{error}</Banner>}
+          <Field label="Логин" htmlFor="login">
+            <Input
+              id="login"
+              autoComplete="username"
+              autoFocus
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Например, sklad"
+            />
           </Field>
-          <Field label="Пароль">
-            <input className={inputCls} type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <Field label="Пароль" htmlFor="password">
+            <Input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
           </Field>
-          <Button type="submit" disabled={busy} className="w-full">
+          <Button type="submit" variant="primary" fullWidth loading={busy} className="mt-1">
             Войти
           </Button>
         </form>
-        <div className="mt-6 border-t border-stone-100 pt-4">
-          <div className="mb-2 text-xs font-medium text-stone-500">Демо-пользователи</div>
-          <div className="grid gap-2">
+
+        <div className="mt-5">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-2xs font-medium uppercase tracking-[0.06em] text-fg-muted">Демо-пользователи</span>
+            <span className="text-xs text-fg-muted">вход в один клик</span>
+          </div>
+          <div className="flex flex-col gap-2">
             {DEMO.map((d) => (
               <button
-                key={d.username}
-                onClick={() => submit(d.username, d.password)}
+                key={d.login}
+                type="button"
                 disabled={busy}
-                className="flex items-center justify-between rounded-md border border-stone-200 px-3 py-2 text-left text-sm hover:bg-wax-50"
+                onClick={() => signIn(d.login, d.password)}
+                className="flex h-11 items-center gap-2.5 rounded border border-border bg-surface px-3 text-left transition-colors hover:border-border-strong hover:bg-subtle focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-accent/25"
               >
-                <span>
-                  <span className="font-medium">{d.title}</span>
-                  <span className="text-stone-500"> · {d.name}</span>
+                <span className="min-w-0 flex-1">
+                  <b className="font-semibold">{d.title}</b> <span className="text-fg-muted">· {d.name}</span>
                 </span>
-                <span className="font-mono text-xs text-stone-400">{d.username}</span>
+                <Tag mono>{d.login}</Tag>
               </button>
             ))}
           </div>
         </div>
       </div>
-    </div>
+    </main>
   )
 }

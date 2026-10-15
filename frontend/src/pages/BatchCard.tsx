@@ -1,26 +1,49 @@
+import { Check, CircleX, Package } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { api } from '../api'
-import { useAuth } from '../auth'
-import History from '../components/History'
-import { Button, Card, ErrorBox, Loading, PageHeader, StatusBadge } from '../components/ui'
-import { day, dateTime, money, num } from '../format'
-import type { BatchCard } from '../types'
+import { useParams } from 'react-router-dom'
+import { api } from '@/api'
+import { useAuth } from '@/auth'
+import { Page } from '@/components/layout/AppShell'
+import {
+  Banner,
+  BatchStatusBadge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  CardSkeleton,
+  DocLink,
+  EmptyState,
+  KeyValueList,
+  MaterialCode,
+  PageHeader,
+  Qty,
+  Table,
+  Td,
+  Timeline,
+  Tr,
+} from '@/components/ui'
+import { auditToEvent } from '@/lib/audit'
+import { formatDate, formatDateTime, formatMoney, formatQty, type Currency } from '@/lib/format'
+import type { BatchCard, Movement } from '@/types'
 
+/** 04–05 — Карточка партии. Кладовщику и руководителю у партии на проверке — «Принять» и «Брак». */
 export default function BatchCardPage() {
   const { id } = useParams()
   const { can } = useAuth()
   const [card, setCard] = useState<BatchCard | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<'accepted' | 'rejected' | null>(null)
 
   const load = useCallback(() => {
-    api<BatchCard>(`/api/batches/${id}`).then(setCard).catch((e) => setError(e.message))
+    api<BatchCard>(`/api/batches/${id}`)
+      .then(setCard)
+      .catch((e) => setError(e.message))
   }, [id])
   useEffect(load, [load])
 
   async function setStatus(status: 'accepted' | 'rejected') {
-    setBusy(true)
+    setBusy(status)
     setError(null)
     try {
       await api(`/api/batches/${id}/status`, { method: 'POST', json: { status } })
@@ -28,118 +51,186 @@ export default function BatchCardPage() {
     } catch (e) {
       setError((e as Error).message)
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
-  if (!card) return error ? <ErrorBox error={error} /> : <Loading />
+  if (!card) {
+    return <Page>{error ? <Banner tone="error">{error}</Banner> : <CardSkeleton lines={6} />}</Page>
+  }
+
   const b = card.batch
+  const foreign = b.currency !== 'RUB'
+  const weekendRate = foreign && b.rate_date !== b.received_date
+  const canCheck = b.status === 'on_check' && can('set_batch_status')
+  const history = card.history.map((e) => auditToEvent(e, { unit: b.unit, currency: b.currency as Currency }))
+
   return (
-    <div className="max-w-5xl">
+    <Page>
       <PageHeader
+        breadcrumbs={[{ label: 'Реестр партий', to: '/batches' }, { label: b.number }]}
         title={`Партия ${b.number}`}
+        badge={<BatchStatusBadge status={b.status} />}
         subtitle={
           <>
-            {b.material} · поступление {card.receipt_number} от {day(b.received_date)} · {b.supplier}
+            {b.material}
+            <MaterialCode>{b.material_code}</MaterialCode> · поступление {card.receipt_number} от{' '}
+            {formatDate(b.received_date)} · {b.supplier}
           </>
         }
         actions={
-          b.status === 'on_check' &&
-          can('set_batch_status') && (
+          canCheck && (
             <>
-              <Button disabled={busy} onClick={() => setStatus('accepted')}>
-                Принять
-              </Button>
-              <Button variant="danger" disabled={busy} onClick={() => setStatus('rejected')}>
+              <Button
+                variant="danger"
+                icon={<CircleX />}
+                loading={busy === 'rejected'}
+                disabled={busy !== null}
+                onClick={() => setStatus('rejected')}
+              >
                 Брак
+              </Button>
+              <Button
+                variant="primary"
+                icon={<Check />}
+                loading={busy === 'accepted'}
+                disabled={busy !== null}
+                onClick={() => setStatus('accepted')}
+              >
+                Принять
               </Button>
             </>
           )
         }
       />
-      <ErrorBox error={error} />
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card title="Сведения">
-          <dl className="grid grid-cols-2 gap-y-2 text-sm">
-            <dt className="text-stone-500">Статус</dt>
-            <dd>
-              <StatusBadge status={b.status} title={b.status_title} />
-            </dd>
-            <dt className="text-stone-500">Пришло</dt>
-            <dd>
-              {num(b.qty)} {b.unit}
-            </dd>
-            <dt className="text-stone-500">Остаток</dt>
-            <dd>
-              {num(b.remaining_qty)} {b.unit}
-            </dd>
-            <dt className="text-stone-500">В резерве</dt>
-            <dd>
-              {num(b.reserved_qty)} {b.unit}
-            </dd>
-            <dt className="text-stone-500">Свободно</dt>
-            <dd className="font-medium">
-              {num(b.free_qty)} {b.unit}
-            </dd>
-            <dt className="text-stone-500">Цена</dt>
-            <dd>
-              {num(b.price)} {b.currency} за {b.unit}
-            </dd>
-            <dt className="text-stone-500">Курс</dt>
-            <dd>
-              {b.currency === 'RUB' ? '—' : `${num(b.rate)} ₽ на ${day(b.rate_date)}`}
-              {b.rate_date !== b.received_date && b.currency !== 'RUB' && (
-                <div className="text-xs text-stone-500">поставка в нерабочий день — взят последний курс</div>
+
+      <div className="flex flex-col gap-4">
+        {error && <Banner tone="error">{error}</Banner>}
+        {b.status === 'on_check' && (
+          <Banner tone="warning">
+            Партия ждёт проверки качества. Пока она не принята, материал нельзя резервировать:{' '}
+            {formatQty(b.qty)} {b.unit} учитываются в остатках как «Ждёт приёмки».
+          </Banner>
+        )}
+
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] gap-4">
+          <Card>
+            <CardHeader title="Сведения" />
+            <CardBody className="pb-3 pt-1">
+              <KeyValueList
+                items={[
+                  { label: 'Пришло', value: <Qty value={formatQty(b.qty)} unit={b.unit} /> },
+                  { label: 'Остаток', value: <Qty value={formatQty(b.remaining_qty)} unit={b.unit} /> },
+                  { label: 'В резерве', value: <Qty value={formatQty(b.reserved_qty)} unit={b.unit} /> },
+                  { label: 'Свободно', value: <Qty value={formatQty(b.free_qty)} unit={b.unit} />, emphasis: true },
+                  {
+                    label: 'Цена',
+                    value: (
+                      <>
+                        {formatMoney(b.price, b.currency as Currency)}{' '}
+                        <span className="text-fg-subtle">за {b.unit}</span>
+                      </>
+                    ),
+                  },
+                  {
+                    label: 'Курс',
+                    value: foreign ? (
+                      <>
+                        {formatQty(b.rate)} ₽ за 1 {b.currency}{' '}
+                        <span className="text-fg-subtle">· на {formatDate(b.rate_date)}</span>
+                      </>
+                    ) : (
+                      <span className="text-fg-subtle">не требуется — рубли</span>
+                    ),
+                    note: weekendRate ? 'Поставка в нерабочий день — взят последний курс' : undefined,
+                  },
+                  {
+                    label: 'Себестоимость',
+                    value: (
+                      <>
+                        {formatMoney(b.unit_cost_rub)} <span className="font-normal text-fg-subtle">за {b.unit}</span>
+                      </>
+                    ),
+                    emphasis: true,
+                  },
+                ]}
+              />
+              {b.comment && (
+                <div className="mt-3 rounded border border-border-soft bg-subtle px-3 py-2.5">
+                  <div className="mb-0.5 text-2xs font-medium uppercase tracking-[0.06em] text-fg-muted">
+                    Комментарий
+                  </div>
+                  {b.comment}
+                </div>
               )}
-            </dd>
-            <dt className="text-stone-500">Себестоимость</dt>
-            <dd>{money(b.unit_cost_rub)} за {b.unit}</dd>
-          </dl>
-          {b.comment && (
-            <div className="mt-3 rounded-md bg-stone-50 p-2 text-sm text-stone-700">
-              <div className="text-xs text-stone-500">Комментарий</div>
-              {b.comment}
-            </div>
-          )}
-        </Card>
-        <Card title="Движения">
-          <h3 className="mb-1 text-xs font-semibold uppercase text-stone-500">Резервы</h3>
-          {card.reservations.length ? (
-            <ul className="mb-3 text-sm">
-              {card.reservations.map((r) => (
-                <li key={r.order_id}>
-                  <Link className="text-wax-700 hover:underline" to={`/orders/${r.order_id}`}>
-                    {r.order_number}
-                  </Link>{' '}
-                  — {num(r.qty)} {b.unit}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="mb-3 text-sm text-stone-400">нет</div>
-          )}
-          <h3 className="mb-1 text-xs font-semibold uppercase text-stone-500">Списания</h3>
-          {card.consumptions.length ? (
-            <ul className="text-sm">
-              {card.consumptions.map((c, i) => (
-                <li key={i}>
-                  <Link className="text-wax-700 hover:underline" to={`/orders/${c.order_id}`}>
-                    {c.order_number}
-                  </Link>{' '}
-                  — {num(c.qty)} {b.unit} <span className="text-stone-400">{dateTime(c.at)}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="text-sm text-stone-400">нет</div>
-          )}
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Движения" />
+            {card.reservations.length + card.consumptions.length === 0 ? (
+              <EmptyState
+                icon={<Package />}
+                title="Резервов и списаний нет"
+                description="Они появятся, когда партию примут и задания начнут брать из неё материал."
+                className="pt-12"
+              />
+            ) : (
+              <CardBody className="flex flex-col gap-5">
+                <MovementList title="Резервы" rows={card.reservations} unit={b.unit} />
+                <MovementList title="Списания" rows={card.consumptions} unit={b.unit} withDate />
+              </CardBody>
+            )}
+          </Card>
+        </div>
+
+        <Card>
+          <CardHeader title="История изменений" />
+          <CardBody>
+            <Timeline events={history} />
+          </CardBody>
         </Card>
       </div>
-      <div className="mt-4">
-        <Card title="История изменений">
-          <History entries={card.history} />
-        </Card>
+    </Page>
+  )
+}
+
+function MovementList({
+  title,
+  rows,
+  unit,
+  withDate,
+}: {
+  title: string
+  rows: Movement[]
+  unit: string
+  withDate?: boolean
+}) {
+  if (!rows.length) return null
+  const total = rows.reduce((s, r) => s + Number(r.qty), 0)
+  return (
+    <div>
+      <div className="mb-1.5 flex justify-between">
+        <span className="text-2xs font-medium uppercase tracking-[0.06em] text-fg-muted">{title}</span>
+        <span className="text-xs tabular-nums text-fg-muted">
+          {formatQty(total)} {unit}
+        </span>
       </div>
+      <Table>
+        <tbody>
+          {rows.map((r, i) => (
+            <Tr key={`${r.order_id}-${i}`}>
+              <Td className="!pl-0">
+                <DocLink to={`/orders/${r.order_id}`}>{r.order_number}</DocLink>
+                {withDate && r.at && <span className="text-fg-muted"> · {formatDateTime(r.at)}</span>}
+              </Td>
+              <Td align="right" className="!pr-0">
+                <Qty value={formatQty(r.qty)} unit={unit} />
+              </Td>
+            </Tr>
+          ))}
+        </tbody>
+      </Table>
     </div>
   )
 }

@@ -1,16 +1,32 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api } from '../api'
-import { Button, Card, ErrorBox, PageHeader, inputCls } from '../components/ui'
-import { dateTime } from '../format'
-import type { Fact } from '../types'
+import { Bookmark, Lock, Plus, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { api } from '@/api'
+import { Page } from '@/components/layout/AppShell'
+import {
+  Banner,
+  Button,
+  Card,
+  CardBody,
+  CardFooter,
+  CardHeader,
+  EmptyState,
+  Input,
+  PageHeader,
+  Skeleton,
+} from '@/components/ui'
+import { formatDateTime } from '@/lib/format'
+import type { Fact } from '@/types'
 
+/** 17 — Память ассистента: факты о пользователе, добавление вручную, очистка. */
 export default function MemoryPage() {
-  const [facts, setFacts] = useState<Fact[]>([])
-  const [text, setText] = useState('')
+  const [facts, setFacts] = useState<Fact[] | null>(null)
+  const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(() => {
-    api<Fact[]>('/api/chat/memory').then(setFacts).catch((e) => setError(e.message))
+    api<Fact[]>('/api/chat/memory')
+      .then(setFacts)
+      .catch((e) => setError(e.message))
   }, [])
   useEffect(load, [load])
 
@@ -24,51 +40,94 @@ export default function MemoryPage() {
     }
   }
 
+  const add = (e: FormEvent) => {
+    e.preventDefault()
+    const text = draft.trim()
+    if (!text) return
+    run(() => api('/api/chat/memory', { method: 'POST', json: { text } }).then(() => setDraft('')))
+  }
+
   return (
-    <div className="max-w-3xl">
+    <Page narrow>
       <PageHeader
         title="Память ассистента"
-        subtitle="Факты о вас, которые ассистент учитывает во всех ваших диалогах. Другим пользователям они не видны."
+        subtitle="Факты о вас, которые ассистент учитывает во всех ваших диалогах."
       />
-      <ErrorBox error={error} />
+      {error && <Banner tone="error" className="mb-4">{error}</Banner>}
       <Card>
-        {facts.length ? (
-          <ul className="divide-y divide-stone-100">
+        <CardHeader
+          title={
+            <>
+              Факты <span className="ml-1 text-xs font-normal text-fg-muted">{facts?.length ?? ''}</span>
+            </>
+          }
+          actions={
+            <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted">
+              <Lock className="size-3.5" aria-hidden />
+              Видны только вам
+            </span>
+          }
+        />
+        {!facts ? (
+          <div className="flex flex-col gap-4 px-5 py-4">
+            <Skeleton className="w-2/3" />
+            <Skeleton className="w-1/2" />
+          </div>
+        ) : facts.length === 0 ? (
+          <EmptyState
+            icon={<Bookmark />}
+            title="Пока пусто"
+            description="Скажите ассистенту, например: «запомни, мой цех — второй» — или добавьте факт вручную."
+          />
+        ) : (
+          <ul>
             {facts.map((f) => (
-              <li key={f.id} className="flex items-center justify-between gap-3 py-2">
-                <div>
-                  <div className="text-sm">{f.text}</div>
-                  <div className="text-xs text-stone-400">{dateTime(f.created_at)}</div>
+              <li key={f.id} className="flex items-center gap-3 border-b border-border-soft py-3 pl-5 pr-3 hover:bg-subtle">
+                <div className="min-w-0 flex-1">
+                  <div>{f.text}</div>
+                  <div className="mt-0.5 text-xs text-fg-muted">{formatDateTime(f.created_at)}</div>
                 </div>
-                <Button variant="ghost" onClick={() => run(() => api(`/api/chat/memory/${f.id}`, { method: 'DELETE' }))}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Trash2 />}
+                  aria-label={`Удалить факт «${f.text}»`}
+                  onClick={() => run(() => api(`/api/chat/memory/${f.id}`, { method: 'DELETE' }))}
+                >
                   Удалить
                 </Button>
               </li>
             ))}
           </ul>
-        ) : (
-          <div className="text-sm text-stone-400">
-            Пока пусто. Скажите ассистенту, например: «запомни, мой цех — второй» или «считай мне в евро».
-          </div>
         )}
-        <form
-          className="mt-4 flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (text.trim()) run(() => api('/api/chat/memory', { method: 'POST', json: { text } }).then(() => setText('')))
-          }}
-        >
-          <input className={inputCls} placeholder="Добавить факт вручную" value={text} onChange={(e) => setText(e.target.value)} />
-          <Button type="submit">Добавить</Button>
-        </form>
-        {facts.length > 0 && (
-          <div className="mt-3 text-right">
-            <Button variant="danger" onClick={() => run(() => api('/api/chat/memory', { method: 'DELETE' }))}>
-              Очистить всё
+        <CardBody>
+          <form onSubmit={add} className="flex gap-2">
+            <Input
+              aria-label="Новый факт"
+              maxLength={300}
+              placeholder="Добавить факт вручную, например: «Планирую задания по пятницам»"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <Button type="submit" icon={<Plus />} disabled={!draft.trim()}>
+              Добавить
             </Button>
-          </div>
-        )}
+          </form>
+        </CardBody>
+        <CardFooter>
+          <span className="text-xs text-fg-muted">
+            Ассистент сам запоминает факты из диалогов — вы видите и удаляете любой из них.
+          </span>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={!facts?.length}
+            onClick={() => run(() => api('/api/chat/memory', { method: 'DELETE' }))}
+          >
+            Очистить всё
+          </Button>
+        </CardFooter>
       </Card>
-    </div>
+    </Page>
   )
 }

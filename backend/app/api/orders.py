@@ -62,7 +62,7 @@ async def build_card(session, order_id: int) -> OrderCard:
             for c, b in cons
         ],
         history=[audit_out(h) for h in history],
-        marking=marking_out(report, order.number, attempts) if report else None,
+        marking=marking_out(report, order.number, attempts, order) if report else None,
     )
 
 

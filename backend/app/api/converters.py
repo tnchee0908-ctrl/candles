@@ -13,6 +13,7 @@ from app.models import (
     Supplier,
 )
 from app.schemas import AuditOut, BatchRow, ComponentOut, MarkingOut, OrderRow
+from app.services.common import fmt_num
 from app.services.orders import traffic_light
 
 
@@ -84,14 +85,31 @@ def order_row(o: ProductionOrder) -> OrderRow:
         status=o.status,
         status_title=ORDER_STATUS_TITLES[OrderStatus(o.status)],
         light=order_light(o),  # type: ignore[arg-type]
+        deficit_summary=deficit_summary(o),
     )
 
 
-def marking_out(r: MarkingReport, order_number: str | None = None, attempts=None) -> MarkingOut:
+def deficit_summary(o: ProductionOrder) -> str | None:
+    if o.status not in (OrderStatus.DRAFT, OrderStatus.PLANNED):
+        return None
+    missing = [c for c in o.components if c.reserved_qty < c.required_qty]
+    if not missing or o.status == OrderStatus.DRAFT:
+        return None
+    first = missing[0]
+    text = f"{fmt_num(first.required_qty - first.reserved_qty)} {first.material.unit} «{first.material.name}»"
+    return text + (f" и ещё {len(missing) - 1}" if len(missing) > 1 else "")
+
+
+def marking_out(
+    r: MarkingReport, order_number: str | None = None, attempts=None, order: ProductionOrder | None = None
+) -> MarkingOut:
     return MarkingOut(
         id=r.id,
         order_id=r.order_id,
         order_number=order_number,
+        product=order.recipe.name if order else None,
+        qty=order.qty if order else None,
+        completed_at=order.completed_at if order else None,
         status=r.status,
         attempts=r.attempts,
         next_attempt_at=r.next_attempt_at if r.status == "pending" else None,

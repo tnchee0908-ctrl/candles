@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Светлая тема. Значения — каналы "R G B" для rgb(var(--x) / alpha).
+   Тёмная тема добавляется блоком :root[data-theme='dark'] { ... } с теми же именами. */
+@layer base {
+  :root {
+    --c-canvas: 247 246 243;
+    --c-surface: 255 255 255;
+    --c-subtle: 250 249 247;
+    --c-muted: 241 239 236;
+    --c-hover: 239 237 233;
+
+    --c-border: 231 228 223;
+    --c-border-strong: 214 210 203;
+    --c-border-soft: 239 237 233;
+    --c-border-hover: 196 191 183;
+
+    --c-fg: 28 25 23;
+    --c-fg-label: 68 64 60;
+    --c-fg-secondary: 87 83 78;
+    --c-fg-muted: 120 113 108;
+    --c-fg-subtle: 138 132 124;
+    --c-fg-faint: 168 162 158;
+
+    --c-accent: 180 83 42;
+    --c-accent-hover: 154 69 34;
+    --c-accent-ink: 143 64 32;
+    --c-accent-25: 253 248 244;
+    --c-accent-50: 251 240 232;
+    --c-accent-200: 235 205 184;
+
+    --c-success-bg: 234 245 238;
+    --c-success-fg: 30 107 58;
+    --c-success-dot: 47 158 91;
+    --c-success-border: 200 228 209;
+
+    --c-warning-bg: 253 243 223;
+    --c-warning-fg: 122 78 0;
+    --c-warning-dot: 224 162 27;
+    --c-warning-border: 240 219 168;
+    --c-warning-icon: 201 138 12;
+
+    --c-danger-bg: 252 237 236;
+    --c-danger-fg: 180 35 24;
+    --c-danger-dot: 220 59 47;
+    --c-danger-border: 243 203 198;
+    --c-danger-ink: 127 29 22;
+
+    --c-info-bg: 237 241 251;
+    --c-info-fg: 52 81 163;
+    --c-info-dot: 79 111 209;
+
+    --c-progress-bg: 242 238 251;
+    --c-progress-fg: 91 63 166;
+    --c-progress-dot: 124 92 214;
+
+    --c-neutral-bg: 241 239 236;
+    --c-neutral-fg: 87 83 78;
+    --c-neutral-dot: 168 162 158;
+
+    --c-code-bg: 28 25 23;
+    --c-code-fg: 231 229 228;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-canvas font-sans text-base text-fg antialiased;
+  }
+
+  /* Числа в таблицах и метриках — табличные цифры */
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Ответ ассистента: Markdown */
+  .prose-chat p { @apply mb-2.5 last:mb-0; }
+  .prose-chat ul { @apply mb-2.5 list-disc pl-5; }
+  .prose-chat ol { @apply mb-2.5 list-decimal pl-5; }
+  .prose-chat li { @apply my-0.5; }
+  .prose-chat strong { @apply font-semibold; }
+  .prose-chat a { @apply text-accent hover:text-accent-ink hover:underline; }
+  .prose-chat code { @apply rounded-sm bg-muted px-1.5 py-px font-mono text-[12.5px]; }
+  .prose-chat table { @apply mb-2.5 w-full overflow-hidden rounded-lg border border-border bg-surface text-base; }
+  .prose-chat th { @apply h-9 border-b border-border bg-subtle px-3 text-left text-xs font-medium text-fg-muted; }
+  .prose-chat td { @apply h-10 border-b border-border-soft px-3; }
+  .prose-chat tr:last-child td { @apply border-b-0; }
+}

@@ -3,6 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.api.converters import audit_out, batch_row, marking_out
 from app.deps import ActorDep, SessionDep
@@ -12,6 +13,7 @@ from app.schemas import (
     AuditPage,
     BatchCard,
     BatchPage,
+    BatchRef,
     BatchStatusIn,
     MarkingOut,
     MaterialIn,
@@ -86,11 +88,15 @@ async def create_receipt(body: ReceiptIn, session: SessionDep, actor: ActorDep):
         received_date=body.received_date,
         lines=[ReceiptLine(l.material_code, l.qty, l.price, l.currency, l.comment) for l in body.lines],  # noqa: E741
     )
-    numbers = [
-        b.number
-        for b in await session.scalars(select(Batch).where(Batch.receipt_id == receipt.id).order_by(Batch.id))
-    ]
-    return ReceiptOut(id=receipt.id, number=receipt.number, batch_numbers=numbers)
+    created = list(
+        await session.scalars(select(Batch).where(Batch.receipt_id == receipt.id).order_by(Batch.id))
+    )
+    return ReceiptOut(
+        id=receipt.id,
+        number=receipt.number,
+        batch_numbers=[b.number for b in created],
+        batches=[BatchRef(id=b.id, number=b.number) for b in created],
+    )
 
 
 @router.get("/batches", response_model=BatchPage)
@@ -146,11 +152,18 @@ async def audit_log(
     actor: ActorDep,
     entity_type: str | None = None,
     entity_id: int | None = None,
+    via_assistant: bool | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
     items, total = await audit.list_entries(
-        session, actor, entity_type=entity_type, entity_id=entity_id, page=page, page_size=page_size
+        session,
+        actor,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        via_assistant=via_assistant,
+        page=page,
+        page_size=page_size,
     )
     return AuditPage(total=total, page=page, page_size=page_size, items=[audit_out(a) for a in items])
 
@@ -160,8 +173,9 @@ async def marking_reports(session: SessionDep, actor: ActorDep):
     require(actor, Perm.VIEW_MARKING)
     rows = (
         await session.execute(
-            select(MarkingReport, ProductionOrder.number)
+            select(MarkingReport, ProductionOrder)
             .join(ProductionOrder, ProductionOrder.id == MarkingReport.order_id)
+            .options(selectinload(ProductionOrder.recipe))
             .order_by(MarkingReport.id.desc())
             .limit(100)
         )
@@ -174,7 +188,7 @@ async def marking_reports(session: SessionDep, actor: ActorDep):
             .order_by(MarkingAttempt.attempt_no)
         ):
             attempts.setdefault(a.report_id, []).append(a)
-    return [marking_out(r, number, attempts.get(r.id)) for r, number in rows]
+    return [marking_out(r, o.number, attempts.get(r.id), o) for r, o in rows]
 
 
 @router.post("/marking/{report_id}/retry", response_model=MarkingOut)

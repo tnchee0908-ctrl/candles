@@ -1,47 +1,55 @@
+import { PackageSearch, Plus, RotateCcw, Search } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { api } from '../api'
-import { useAuth } from '../auth'
-import { Button, ErrorBox, PageHeader, StatusBadge, inputCls, td, tdNum, th } from '../components/ui'
-import { day, money, num } from '../format'
-import type { BatchRow, Page } from '../types'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { api } from '@/api'
+import { useAuth } from '@/auth'
+import { Page } from '@/components/layout/AppShell'
+import {
+  Banner,
+  BatchStatusBadge,
+  Button,
+  Card,
+  DateRange,
+  DocLink,
+  EmptyState,
+  FilterRow,
+  Input,
+  MaterialCode,
+  PageHeader,
+  Pagination,
+  Qty,
+  Select,
+  Table,
+  TableScroll,
+  TableSkeleton,
+  Td,
+  Th,
+  Tr,
+} from '@/components/ui'
+import { cn } from '@/lib/cn'
+import { formatDate, formatMoney, formatPrice, formatQty } from '@/lib/format'
+import type { BatchRow, Page as PageData } from '@/types'
 
-type Col = {
-  key: string
-  label: string
-  numeric?: boolean
-  filter?: 'text' | 'status' | 'currency' | 'date'
-}
+const TEXT_FILTERS = ['number', 'material', 'supplier'] as const
+const ALL_FILTERS = [...TEXT_FILTERS, 'status', 'currency', 'date_from', 'date_to']
 
-const COLUMNS: Col[] = [
-  { key: 'number', label: 'Номер', filter: 'text' },
-  { key: 'received_date', label: 'Дата', filter: 'date' },
-  { key: 'material', label: 'Материал', filter: 'text' },
-  { key: 'supplier', label: 'Поставщик', filter: 'text' },
-  { key: 'qty', label: 'Пришло', numeric: true },
-  { key: 'remaining_qty', label: 'Остаток', numeric: true },
-  { key: 'reserved_qty', label: 'Резерв', numeric: true },
-  { key: 'free_qty', label: 'Свободно', numeric: true },
-  { key: 'price', label: 'Цена', numeric: true },
-  { key: 'currency', label: 'Валюта', filter: 'currency' },
-  { key: 'unit_cost_rub', label: 'Себест., ₽/ед', numeric: true },
-  { key: 'status', label: 'Статус', filter: 'status' },
-]
-
-const FILTER_KEYS = ['number', 'material', 'supplier', 'status', 'currency', 'date_from', 'date_to']
-
-/** Фильтры, сортировка и страница живут в URL — ссылкой на реестр можно поделиться. */
+/**
+ * 02–03 — Реестр партий. Фильтры, сортировка и страница живут в URL (ссылкой можно поделиться),
+ * фильтрует и листает сервер.
+ */
 export default function BatchesPage() {
+  const navigate = useNavigate()
   const { can } = useAuth()
   const [params, setParams] = useSearchParams()
-  const [data, setData] = useState<Page<BatchRow> | null>(null)
+  const [data, setData] = useState<PageData<BatchRow> | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Текстовые фильтры применяются с задержкой, чтобы не дёргать сервер на каждую букву.
   const [drafts, setDrafts] = useState<Record<string, string>>(() =>
-    Object.fromEntries(FILTER_KEYS.map((k) => [k, params.get(k) ?? ''])),
+    Object.fromEntries(TEXT_FILTERS.map((k) => [k, params.get(k) ?? ''])),
   )
 
   const sort = params.get('sort') ?? 'received_date'
-  const direction = params.get('direction') ?? 'desc'
+  const direction = (params.get('direction') ?? 'desc') as 'asc' | 'desc'
   const page = Number(params.get('page') ?? 1)
   const pageSize = Number(params.get('page_size') ?? 20)
   const query = params.toString()
@@ -49,7 +57,7 @@ export default function BatchesPage() {
   useEffect(() => {
     const q = new URLSearchParams(query)
     if (!q.get('sort')) q.set('sort', 'received_date')
-    api<Page<BatchRow>>(`/api/batches?${q.toString()}`)
+    api<PageData<BatchRow>>(`/api/batches?${q}`)
       .then((d) => {
         setData(d)
         setError(null)
@@ -57,13 +65,12 @@ export default function BatchesPage() {
       .catch((e) => setError(e.message))
   }, [query])
 
-  // Текстовые фильтры применяем с небольшой задержкой, чтобы не дёргать сервер на каждую букву.
   useEffect(() => {
     const t = setTimeout(() => {
       const next = new URLSearchParams(params)
       let changed = false
-      for (const k of FILTER_KEYS) {
-        const v = drafts[k]?.trim() ?? ''
+      for (const k of TEXT_FILTERS) {
+        const v = drafts[k].trim()
         if ((params.get(k) ?? '') !== v) {
           changed = true
           if (v) next.set(k, v)
@@ -78,187 +85,225 @@ export default function BatchesPage() {
     return () => clearTimeout(t)
   }, [drafts, params, setParams])
 
-  function setParam(key: string, value: string | null) {
+  function setParam(patch: Record<string, string | null>, resetPage = true) {
     const next = new URLSearchParams(params)
-    if (value === null || value === '') next.delete(key)
-    else next.set(key, value)
-    setParams(next)
-  }
-
-  function toggleSort(key: string) {
-    const next = new URLSearchParams(params)
-    if (sort === key) next.set('direction', direction === 'asc' ? 'desc' : 'asc')
-    else {
-      next.set('sort', key)
-      next.set('direction', 'asc')
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) next.set(k, v)
+      else next.delete(k)
     }
-    next.set('page', '1')
+    if (resetPage) next.set('page', '1')
     setParams(next)
   }
 
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1
-  const hasFilters = FILTER_KEYS.some((k) => params.get(k))
+  function resetFilters() {
+    setDrafts(Object.fromEntries(TEXT_FILTERS.map((k) => [k, ''])))
+    setParam(Object.fromEntries(ALL_FILTERS.map((k) => [k, null])))
+  }
+
+  const hasFilters = ALL_FILTERS.some((k) => params.get(k))
+
+  const th = (key: string, label: string, align: 'left' | 'right' = 'left') => (
+    <Th
+      align={align}
+      sortable
+      sort={sort === key ? direction : null}
+      onSort={() =>
+        setParam({ sort: key, direction: sort === key && direction === 'desc' ? 'asc' : 'desc' })
+      }
+    >
+      {label}
+    </Th>
+  )
 
   return (
-    <div>
+    <Page wide>
       <PageHeader
         title="Реестр партий"
-        subtitle="Фильтр — строка под заголовками, сортировка — клик по заголовку."
+        subtitle="Все партии сырья от поставщиков. Себестоимость — в рублях по курсу на дату поступления."
         actions={
           <>
             {hasFilters && (
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setDrafts(Object.fromEntries(FILTER_KEYS.map((k) => [k, ''])))
-                  setParams({})
-                }}
-              >
+              <Button variant="ghost" icon={<RotateCcw />} onClick={resetFilters}>
                 Сбросить фильтры
               </Button>
             )}
             {can('create_receipt') && (
-              <Link to="/receipts/new">
-                <Button>+ Поступление</Button>
-              </Link>
+              <Button variant="primary" icon={<Plus />} onClick={() => navigate('/receipts/new')}>
+                Поступление
+              </Button>
             )}
           </>
         }
       />
-      <ErrorBox error={error} />
-      <div className="overflow-x-auto rounded-lg border border-stone-200 bg-white shadow-sm">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              {COLUMNS.map((c) => (
-                <th
-                  key={c.key}
-                  className={`${th} cursor-pointer select-none hover:text-stone-800 ${c.numeric ? 'text-right' : ''}`}
-                  onClick={() => toggleSort(c.key)}
-                >
-                  {c.label}
-                  <span className="ml-1 inline-block w-2">{sort === c.key ? (direction === 'asc' ? '▲' : '▼') : ''}</span>
-                </th>
-              ))}
-            </tr>
-            <tr className="bg-stone-50">
-              {COLUMNS.map((c) => (
-                <th key={c.key} className="border-b border-stone-200 px-2 py-1.5 font-normal">
-                  <ColumnFilter col={c} drafts={drafts} setDrafts={setDrafts} />
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data?.items.map((b) => (
-              <tr key={b.id} className="hover:bg-wax-50">
-                <td className={td}>
-                  <Link to={`/batches/${b.id}`} className="font-medium text-wax-700 hover:underline">
-                    {b.number}
-                  </Link>
-                </td>
-                <td className={td}>{day(b.received_date)}</td>
-                <td className={td}>
-                  {b.material} <span className="text-xs text-stone-400">{b.material_code}</span>
-                </td>
-                <td className={td}>{b.supplier}</td>
-                <td className={tdNum}>
-                  {num(b.qty)} <span className="text-stone-400">{b.unit}</span>
-                </td>
-                <td className={tdNum}>{num(b.remaining_qty)}</td>
-                <td className={tdNum}>{num(b.reserved_qty)}</td>
-                <td className={`${tdNum} font-medium`}>{num(b.free_qty)}</td>
-                <td className={tdNum}>{num(b.price)}</td>
-                <td className={td}>{b.currency}</td>
-                <td className={tdNum}>{money(b.unit_cost_rub, '')}</td>
-                <td className={td}>
-                  <StatusBadge status={b.status} title={b.status_title} />
-                </td>
-              </tr>
-            ))}
-            {data && data.items.length === 0 && (
-              <tr>
-                <td colSpan={COLUMNS.length} className="px-3 py-8 text-center text-stone-400">
-                  Ничего не найдено
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-stone-600">
-        <div>
-          Всего: <b>{data?.total ?? '…'}</b>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            className="rounded-md border border-stone-300 px-2 py-1"
-            value={pageSize}
-            onChange={(e) => {
-              const next = new URLSearchParams(params)
-              next.set('page_size', e.target.value)
-              next.set('page', '1')
-              setParams(next)
-            }}
-          >
-            {[20, 50, 100].map((n) => (
-              <option key={n} value={n}>
-                по {n}
-              </option>
-            ))}
-          </select>
-          <Button variant="secondary" disabled={page <= 1} onClick={() => setParam('page', String(page - 1))}>
-            ←
-          </Button>
-          <span>
-            {page} из {totalPages}
-          </span>
-          <Button variant="secondary" disabled={page >= totalPages} onClick={() => setParam('page', String(page + 1))}>
-            →
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
+      {error && <Banner tone="error" className="mb-4">{error}</Banner>}
 
-function ColumnFilter({
-  col,
-  drafts,
-  setDrafts,
-}: {
-  col: Col
-  drafts: Record<string, string>
-  setDrafts: (fn: (d: Record<string, string>) => Record<string, string>) => void
-}) {
-  const set = (k: string, v: string) => setDrafts((d) => ({ ...d, [k]: v }))
-  const cls = `${inputCls} py-1 text-xs`
-  if (col.filter === 'text')
-    return <input className={cls} placeholder="фильтр" value={drafts[col.key] ?? ''} onChange={(e) => set(col.key, e.target.value)} />
-  if (col.filter === 'status')
-    return (
-      <select className={cls} value={drafts.status} onChange={(e) => set('status', e.target.value)}>
-        <option value="">все</option>
-        <option value="on_check">На проверке</option>
-        <option value="accepted">Принята</option>
-        <option value="rejected">Брак</option>
-      </select>
-    )
-  if (col.filter === 'currency')
-    return (
-      <select className={cls} value={drafts.currency} onChange={(e) => set('currency', e.target.value)}>
-        <option value="">все</option>
-        <option>RUB</option>
-        <option>USD</option>
-        <option>EUR</option>
-      </select>
-    )
-  if (col.filter === 'date')
-    return (
-      <div className="flex flex-col gap-1">
-        <input type="date" className={cls} value={drafts.date_from} onChange={(e) => set('date_from', e.target.value)} title="с" />
-        <input type="date" className={cls} value={drafts.date_to} onChange={(e) => set('date_to', e.target.value)} title="по" />
-      </div>
-    )
-  return null
+      <Card>
+        <TableScroll>
+          <Table fixed minWidth={1140}>
+            <colgroup>
+              <col className="w-[84px]" />
+              <col className="w-[106px]" />
+              <col />
+              <col className="w-[140px]" />
+              <col className="w-[84px]" />
+              <col className="w-[74px]" />
+              <col className="w-[68px]" />
+              <col className="w-[80px]" />
+              <col className="w-[62px]" />
+              <col className="w-[76px]" />
+              <col className="w-[92px]" />
+              <col className="w-[120px]" />
+            </colgroup>
+            <thead>
+              <tr>
+                {th('number', 'Номер')}
+                {th('received_date', 'Дата')}
+                {th('material', 'Материал')}
+                {th('supplier', 'Поставщик')}
+                {th('qty', 'Пришло', 'right')}
+                {th('remaining_qty', 'Остаток', 'right')}
+                {th('reserved_qty', 'Резерв', 'right')}
+                {th('free_qty', 'Свободно', 'right')}
+                {th('price', 'Цена', 'right')}
+                {th('currency', 'Валюта')}
+                {th('unit_cost_rub', 'Себест. ₽/ед', 'right')}
+                {th('status', 'Статус')}
+              </tr>
+              <FilterRow>
+                <td>
+                  <Input
+                    size="sm"
+                    placeholder="П-…"
+                    aria-label="Фильтр по номеру"
+                    value={drafts.number}
+                    onChange={(e) => setDrafts((d) => ({ ...d, number: e.target.value }))}
+                  />
+                </td>
+                <td>
+                  <DateRange
+                    size="sm"
+                    label="Период поступления"
+                    from={params.get('date_from') ?? ''}
+                    to={params.get('date_to') ?? ''}
+                    onChange={(from, to) => setParam({ date_from: from, date_to: to })}
+                  />
+                </td>
+                <td>
+                  <Input
+                    size="sm"
+                    leftIcon={<Search />}
+                    placeholder="Материал или код"
+                    aria-label="Фильтр по материалу"
+                    value={drafts.material}
+                    onChange={(e) => setDrafts((d) => ({ ...d, material: e.target.value }))}
+                  />
+                </td>
+                <td>
+                  <Input
+                    size="sm"
+                    placeholder="Поставщик"
+                    aria-label="Фильтр по поставщику"
+                    value={drafts.supplier}
+                    onChange={(e) => setDrafts((d) => ({ ...d, supplier: e.target.value }))}
+                  />
+                </td>
+                <td />
+                <td />
+                <td />
+                <td />
+                <td />
+                <td>
+                  <Select
+                    size="sm"
+                    aria-label="Фильтр по валюте"
+                    value={params.get('currency') ?? ''}
+                    onChange={(e) => setParam({ currency: e.target.value })}
+                  >
+                    <option value="">Все</option>
+                    <option>RUB</option>
+                    <option>USD</option>
+                    <option>EUR</option>
+                  </Select>
+                </td>
+                <td />
+                <td>
+                  <Select
+                    size="sm"
+                    aria-label="Фильтр по статусу"
+                    value={params.get('status') ?? ''}
+                    onChange={(e) => setParam({ status: e.target.value })}
+                  >
+                    <option value="">Все</option>
+                    <option value="on_check">На проверке</option>
+                    <option value="accepted">Принята</option>
+                    <option value="rejected">Брак</option>
+                  </Select>
+                </td>
+              </FilterRow>
+            </thead>
+            <tbody>
+              {data?.items.map((b) => {
+                const free = Number(b.free_qty)
+                return (
+                  <Tr key={b.id}>
+                    <Td>
+                      <DocLink to={`/batches/${b.id}`}>{b.number}</DocLink>
+                    </Td>
+                    <Td>{formatDate(b.received_date)}</Td>
+                    <Td truncate title={`${b.material} · ${b.material_code}`}>
+                      {b.material}
+                      <MaterialCode>{b.material_code}</MaterialCode>
+                    </Td>
+                    <Td truncate title={b.supplier}>
+                      {b.supplier}
+                    </Td>
+                    <Td align="right">
+                      <Qty value={formatQty(b.qty)} unit={b.unit} />
+                    </Td>
+                    <Td align="right">{formatQty(b.remaining_qty)}</Td>
+                    <Td align="right">{formatQty(b.reserved_qty)}</Td>
+                    <Td
+                      align="right"
+                      className={cn('font-semibold', free === 0 && b.status === 'accepted' && 'text-danger-fg')}
+                    >
+                      {formatQty(free)}
+                    </Td>
+                    <Td align="right">{formatPrice(b.price)}</Td>
+                    <Td muted>{b.currency}</Td>
+                    <Td align="right">{formatMoney(b.unit_cost_rub).replace(' ₽', '')}</Td>
+                    <Td>
+                      <BatchStatusBadge status={b.status} />
+                    </Td>
+                  </Tr>
+                )
+              })}
+            </tbody>
+          </Table>
+        </TableScroll>
+        {!data && !error && <TableSkeleton rows={8} cols={8} />}
+        {data && data.items.length === 0 && (
+          <EmptyState
+            icon={<PackageSearch />}
+            title="Ничего не найдено"
+            description="Под фильтры не подходит ни одна партия."
+            action={
+              hasFilters && (
+                <Button size="sm" onClick={resetFilters}>
+                  Сбросить фильтры
+                </Button>
+              )
+            }
+          />
+        )}
+        <Pagination
+          total={data?.total ?? 0}
+          totalLabel={hasFilters ? 'Найдено' : 'Всего'}
+          page={page}
+          pageSize={pageSize}
+          onPage={(p) => setParam({ page: String(p) }, false)}
+          onPageSize={(s) => setParam({ page_size: String(s) })}
+        />
+      </Card>
+    </Page>
+  )
 }

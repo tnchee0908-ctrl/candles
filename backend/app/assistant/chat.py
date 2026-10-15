@@ -538,7 +538,14 @@ async def message_to_dict(session: AsyncSession, msg: Message) -> dict[str, Any]
             select(PendingAction).where(PendingAction.id.in_(ids)).order_by(PendingAction.id)
         ):
             actions.append(
-                {"id": a.id, "kind": a.kind, "status": a.status, "preview": a.preview, "result": a.result}
+                {
+                    "id": a.id,
+                    "kind": a.kind,
+                    "status": a.status,
+                    "preview": a.preview,
+                    "result": a.result,
+                    "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+                }
             )
     files = []
     if msg.role == "user" and msg.meta.get("file_ids"):

@@ -41,6 +41,7 @@ async def list_entries(
     *,
     entity_type: str | None = None,
     entity_id: int | None = None,
+    via_assistant: bool | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[AuditLog], int]:
@@ -50,6 +51,8 @@ async def list_entries(
         stmt = stmt.where(AuditLog.entity_type == entity_type)
     if entity_id is not None:
         stmt = stmt.where(AuditLog.entity_id == entity_id)
+    if via_assistant is not None:
+        stmt = stmt.where(AuditLog.via_assistant == via_assistant)
     total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = await session.scalars(
         stmt.order_by(AuditLog.at.desc(), AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size)

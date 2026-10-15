@@ -90,6 +90,7 @@ export interface OrderRow {
   status: 'draft' | 'planned' | 'in_progress' | 'completed' | 'cancelled'
   status_title: string
   light: Light
+  deficit_summary: string | null
 }
 
 export interface Component {
@@ -124,6 +125,9 @@ export interface Marking {
   id: number
   order_id: number
   order_number: string | null
+  product: string | null
+  qty: number | null
+  completed_at: string | null
   status: 'pending' | 'sent' | 'failed'
   attempts: number
   next_attempt_at: string | null
@@ -203,6 +207,7 @@ export interface ChatAction {
   status: 'pending' | 'confirmed' | 'rejected' | 'failed'
   preview: ActionPreview
   result?: { order_id?: number; order_number?: string; shortage?: string | null; error?: string } | null
+  decided_at?: string | null
 }
 
 export interface ChatMessage {
@@ -233,4 +238,15 @@ export interface Fact {
   id: number
   text: string
   created_at: string
+}
+
+export interface ReceiptResult {
+  id: number
+  number: string
+  batch_numbers: string[]
+  batches: { id: number; number: string }[]
+}
+
+export interface Supplier {
+  name: string
 }

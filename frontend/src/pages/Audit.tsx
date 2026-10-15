@@ -1,95 +1,158 @@
+import { History, MessageSquare } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { api } from '../api'
-import { Button, ErrorBox, PageHeader, Table, inputCls, td, th } from '../components/ui'
-import { dateTime } from '../format'
-import type { AuditEntry, Page } from '../types'
+import { api } from '@/api'
+import { Page } from '@/components/layout/AppShell'
+import {
+  Banner,
+  Card,
+  Dash,
+  DocLink,
+  EmptyState,
+  PageHeader,
+  Pagination,
+  Select,
+  Table,
+  TableScroll,
+  TableSkeleton,
+  Tag,
+  Td,
+  Th,
+  Tr,
+} from '@/components/ui'
+import { auditChanges, auditSummary } from '@/lib/audit'
+import { formatDateTime, shortName } from '@/lib/format'
+import type { AuditEntry, Page as PageData } from '@/types'
 
-const ENTITY = { batch: 'Партия', order: 'Задание', material: 'Материал', recipe: 'Рецепт' } as Record<string, string>
+const ENTITY: Record<string, string> = { batch: 'Партия', order: 'Задание', material: 'Материал', recipe: 'Рецепт' }
+const LINK: Record<string, string> = { batch: 'batches', order: 'orders' }
 
-function short(v: Record<string, unknown> | null): string {
-  if (!v) return '—'
-  const { components: _components, ...rest } = v
-  void _components
-  return Object.entries(rest)
-    .map(([k, val]) => `${k}: ${typeof val === 'object' ? JSON.stringify(val) : String(val)}`)
-    .join(', ')
-}
-
+/** 16 — Журнал изменений: кто, когда, что было и что стало — человекочитаемо, без JSON. */
 export default function AuditPage() {
-  const [data, setData] = useState<Page<AuditEntry> | null>(null)
-  const [entity, setEntity] = useState('')
-  const [page, setPage] = useState(1)
+  const [data, setData] = useState<PageData<AuditEntry> | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [entity, setEntity] = useState('')
+  const [onlyAssistant, setOnlyAssistant] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   useEffect(() => {
-    const q = new URLSearchParams({ page: String(page), page_size: '50' })
+    const q = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (entity) q.set('entity_type', entity)
-    api<Page<AuditEntry>>(`/api/audit?${q}`).then(setData).catch((e) => setError(e.message))
-  }, [entity, page])
+    if (onlyAssistant) q.set('via_assistant', 'true')
+    api<PageData<AuditEntry>>(`/api/audit?${q}`)
+      .then((d) => {
+        setData(d)
+        setError(null)
+      })
+      .catch((e) => setError(e.message))
+  }, [entity, onlyAssistant, page, pageSize])
 
-  const pages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1
   return (
-    <div>
-      <PageHeader title="Журнал изменений" subtitle="Кто, когда, что было и что стало" />
-      <ErrorBox error={error} />
-      <div className="mb-3 w-48">
-        <select className={inputCls} value={entity} onChange={(e) => { setEntity(e.target.value); setPage(1) }}>
-          <option value="">Все объекты</option>
-          {Object.entries(ENTITY).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
+    <Page wide>
+      <PageHeader
+        title="Журнал изменений"
+        subtitle="Кто, когда, что было и что стало — по всем партиям, заданиям и рецептам."
+      />
+      {error && <Banner tone="error" className="mb-4">{error}</Banner>}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="w-[180px]">
+          <Select
+            aria-label="Тип объекта"
+            value={entity}
+            onChange={(e) => {
+              setEntity(e.target.value)
+              setPage(1)
+            }}
+          >
+            <option value="">Все объекты</option>
+            <option value="batch">Партии</option>
+            <option value="order">Задания</option>
+            <option value="material">Материалы</option>
+            <option value="recipe">Рецепты</option>
+          </Select>
+        </div>
+        <label className="ml-1 inline-flex items-center gap-2 text-sm text-fg-label">
+          <input
+            type="checkbox"
+            className="size-4 accent-accent"
+            checked={onlyAssistant}
+            onChange={(e) => {
+              setOnlyAssistant(e.target.checked)
+              setPage(1)
+            }}
+          />
+          Только через ассистента
+        </label>
       </div>
-      <div className="rounded-lg border border-stone-200 bg-white shadow-sm">
-        <Table>
-          <thead>
-            <tr>
-              <th className={th}>Когда</th>
-              <th className={th}>Кто</th>
-              <th className={th}>Объект</th>
-              <th className={th}>Действие</th>
-              <th className={th}>Было</th>
-              <th className={th}>Стало</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data?.items.map((e) => (
-              <tr key={e.id} className="align-top">
-                <td className={td}>{dateTime(e.at)}</td>
-                <td className={td}>
-                  {e.user_full_name}
-                  {e.via_assistant && <div className="text-xs text-violet-700">через ассистента</div>}
-                </td>
-                <td className={td}>
-                  {ENTITY[e.entity_type] ?? e.entity_type}{' '}
-                  {e.entity_type === 'batch' || e.entity_type === 'order' ? (
-                    <Link className="text-wax-700 hover:underline" to={`/${e.entity_type === 'batch' ? 'batches' : 'orders'}/${e.entity_id}`}>
-                      {e.entity_label}
-                    </Link>
-                  ) : (
-                    e.entity_label
-                  )}
-                </td>
-                <td className={td}>{e.action}</td>
-                <td className={`${td} max-w-xs whitespace-normal font-mono text-xs text-stone-500`}>{short(e.before)}</td>
-                <td className={`${td} max-w-xs whitespace-normal font-mono text-xs`}>{short(e.after)}</td>
+      <Card>
+        <TableScroll>
+          <Table fixed minWidth={1060}>
+            <colgroup>
+              <col className="w-[148px]" />
+              <col className="w-[164px]" />
+              <col className="w-[150px]" />
+              <col className="w-[190px]" />
+              <col />
+              <col />
+            </colgroup>
+            <thead>
+              <tr>
+                <Th>Когда</Th>
+                <Th>Кто</Th>
+                <Th>Объект</Th>
+                <Th>Действие</Th>
+                <Th>Было</Th>
+                <Th>Стало</Th>
               </tr>
-            ))}
-          </tbody>
-        </Table>
-      </div>
-      <div className="mt-3 flex items-center gap-2 text-sm">
-        <Button variant="secondary" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-          ←
-        </Button>
-        {page} из {pages}
-        <Button variant="secondary" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-          →
-        </Button>
-      </div>
-    </div>
+            </thead>
+            <tbody>
+              {data?.items.map((e) => {
+                const { before, after } = auditSummary(auditChanges(e))
+                const link = LINK[e.entity_type]
+                return (
+                  <Tr key={e.id}>
+                    <Td className="align-top leading-5 [&]:py-2.5">{formatDateTime(e.at)}</Td>
+                    <Td wrap>
+                      <span title={e.user_full_name}>{shortName(e.user_full_name)}</span>
+                      {e.via_assistant && (
+                        <div className="mt-1">
+                          <Tag>
+                            <MessageSquare aria-hidden />
+                            через ассистента
+                          </Tag>
+                        </div>
+                      )}
+                    </Td>
+                    <Td className="align-top [&]:py-2.5">
+                      {ENTITY[e.entity_type] ?? e.entity_type}{' '}
+                      {link ? <DocLink to={`/${link}/${e.entity_id}`}>{e.entity_label}</DocLink> : e.entity_label}
+                    </Td>
+                    <Td wrap>{e.action}</Td>
+                    <Td wrap className="text-fg-secondary">
+                      {before ?? <Dash />}
+                    </Td>
+                    <Td wrap>{after}</Td>
+                  </Tr>
+                )
+              })}
+            </tbody>
+          </Table>
+        </TableScroll>
+        {!data && !error && <TableSkeleton rows={8} cols={6} />}
+        {data && data.items.length === 0 && (
+          <EmptyState icon={<History />} title="Записей нет" description="Под выбранные условия не подходит ни одно изменение." />
+        )}
+        <Pagination
+          total={data?.total ?? 0}
+          page={page}
+          pageSize={pageSize}
+          onPage={setPage}
+          onPageSize={(s) => {
+            setPageSize(s)
+            setPage(1)
+          }}
+        />
+      </Card>
+    </Page>
   )
 }
