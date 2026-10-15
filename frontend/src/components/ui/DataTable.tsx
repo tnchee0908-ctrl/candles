@@ -101,7 +101,7 @@ export function Tr({ highlight, className, ...rest }: TrProps) {
     <tr
       className={cn(
         '[&>td]:transition-colors hover:[&>td]:bg-subtle [&:last-child>td]:border-b-0',
-        highlight && '[&>td]:bg-[#FFFBF2]',
+        highlight && '[&>td]:bg-highlight',
         className,
       )}
       {...rest}
@@ -121,7 +121,7 @@ export function Td({ align = 'left', truncate, wrap, muted, className, ...rest }
   return (
     <td
       className={cn(
-        'h-row border-b border-[#F1EFEC] px-2.5 first:pl-4 last:pr-4',
+        'h-row border-b border-border-soft px-2.5 first:pl-4 last:pr-4',
         wrap ? 'whitespace-normal py-2.5 align-top' : 'whitespace-nowrap',
         truncate && 'overflow-hidden text-ellipsis',
         align === 'right' && 'text-right',

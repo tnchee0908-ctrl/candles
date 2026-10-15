@@ -8,7 +8,11 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { AuthProvider } from './auth'
+import { applyTheme, storedTheme, watchSystemTheme } from './theme'
 import './styles/tokens.css'
+
+applyTheme(storedTheme())
+watchSystemTheme()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

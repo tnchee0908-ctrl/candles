@@ -17,9 +17,10 @@ class Settings(BaseSettings):
     # Таймаут одного HTTP-вызова к сервису маркировки. Мок иногда отвечает через 10 с,
     # поэтому таймаут меньше: такой ответ считаем неудачной попыткой и повторяем.
     marking_timeout_s: float = 5.0
-    marking_max_attempts: int = 8
+    # Паузы 2, 4, 8 … с, потолок 1 час; 36 попыток ≈ сутки, затем «Не отправлен» и ручной повтор.
+    marking_max_attempts: int = 36
     marking_base_delay_s: float = 2.0
-    marking_max_delay_s: float = 300.0
+    marking_max_delay_s: float = 3600.0
 
     openai_api_key: str = ""
     llm_primary_model: str = "gpt-4.1-mini"

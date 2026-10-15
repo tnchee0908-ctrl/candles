@@ -6,13 +6,14 @@ import {
   History,
   Layers,
   LogOut,
+  Settings,
   MessageSquare,
   Package,
   ScanBarcode,
   Truck,
   type LucideIcon,
 } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/cn';
 import { initials } from '@/lib/format';
 import { IconButton } from '@/components/ui';
@@ -65,6 +66,7 @@ interface SidebarProps {
 
 /** Боковая навигация на всю высоту окна (sticky), карточка пользователя внизу. */
 export function Sidebar({ fullName, roleTitle, can, onLogout }: SidebarProps) {
+  const navigate = useNavigate();
   return (
     <div className="w-sidebar shrink-0 border-r border-border bg-surface">
       <aside className="sticky top-0 flex h-screen flex-col">
@@ -93,7 +95,7 @@ export function Sidebar({ fullName, roleTitle, can, onLogout }: SidebarProps) {
                       cn(
                         'group flex h-8 items-center gap-2.5 rounded px-2 transition-colors',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30',
-                        isActive ? 'bg-accent-50 font-medium text-accent-ink' : 'text-fg-label hover:bg-[#F4F2EF] hover:text-fg',
+                        isActive ? 'bg-accent-50 font-medium text-accent-ink' : 'text-fg-label hover:bg-muted hover:text-fg',
                       )
                     }
                   >
@@ -118,6 +120,9 @@ export function Sidebar({ fullName, roleTitle, can, onLogout }: SidebarProps) {
             <div className="truncate text-sm font-medium">{fullName}</div>
             <div className="text-xs text-fg-muted">{roleTitle}</div>
           </div>
+          <IconButton label="Настройки" onClick={() => navigate('/settings')}>
+            <Settings />
+          </IconButton>
           <IconButton label="Выйти" onClick={onLogout}>
             <LogOut />
           </IconButton>

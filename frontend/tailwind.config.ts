@@ -18,6 +18,7 @@ export default {
         subtle: c('subtle'), // шапка таблицы, hover строки
         muted: c('muted'), // нейтральные заливки, disabled
         hover: c('hover'), // hover ghost-кнопок
+        highlight: c('highlight'), // строка с проблемой (дефицит)
         border: {
           DEFAULT: c('border'),
           strong: c('border-strong'), // рамка полей и secondary-кнопок

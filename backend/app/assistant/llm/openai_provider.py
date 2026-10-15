@@ -10,6 +10,7 @@ from openai import NOT_GIVEN, AsyncOpenAI
 from app.assistant.llm.base import (
     CodeRun,
     Completed,
+    LLMAuthError,
     LLMEvent,
     LLMRequest,
     LLMRequestError,
@@ -90,6 +91,8 @@ class OpenAIProvider:
         except openai.APIStatusError as exc:
             if exc.status_code >= 500:
                 raise LLMRetryableError(f"HTTP {exc.status_code}") from exc
+            if exc.status_code in (401, 403):
+                raise LLMAuthError(f"HTTP {exc.status_code}") from exc
             raise LLMRequestError(f"HTTP {exc.status_code}: {exc.message[:300]}") from exc
 
 

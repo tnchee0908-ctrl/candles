@@ -15,7 +15,7 @@ interface ConversationListProps {
 export function ConversationList({ items, activeId, onSelect, onNew, onDelete }: ConversationListProps) {
   const groups = Array.from(new Set(items.map((i) => i.group)));
   return (
-    <nav aria-label="Диалоги" className="flex w-chatlist shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-[#FBFAF8] px-2.5 py-3">
+    <nav aria-label="Диалоги" className="flex w-chatlist shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-subtle px-2.5 py-3">
       <Button variant="secondary" icon={<Plus />} fullWidth onClick={onNew}>
         Новый диалог
       </Button>

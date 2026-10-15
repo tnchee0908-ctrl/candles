@@ -15,6 +15,7 @@ import NewReceiptPage from './pages/NewReceipt'
 import OrderCardPage from './pages/OrderCard'
 import OrdersPage from './pages/Orders'
 import RecipesPage from './pages/Recipes'
+import SettingsPage from './pages/Settings'
 import StockPage from './pages/Stock'
 
 function NotFound() {
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="/assistant/:conversationId?" element={<AssistantPage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/audit" element={<AuditPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

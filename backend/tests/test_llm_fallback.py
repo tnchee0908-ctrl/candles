@@ -64,3 +64,14 @@ async def test_all_providers_down():
     )
     with pytest.raises(LLMRetryableError):
         await collect(llm)
+
+
+async def test_invalid_key_is_reported_clearly_and_not_retried():
+    from app.assistant.llm.base import LLMAuthError
+
+    primary = ScriptedProvider("primary", [LLMAuthError("HTTP 401")])
+    backup = ScriptedProvider("backup", [say("не должен быть вызван")])
+    with pytest.raises(LLMAuthError) as exc:
+        await collect(FallbackLLM([primary, backup]))
+    assert backup.requests == []
+    assert "Ключ OpenAI недействителен" in exc.value.user_message

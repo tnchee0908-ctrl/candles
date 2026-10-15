@@ -12,7 +12,7 @@ export function ChatEmpty({ onPick }: { onPick: (text: string) => void }) {
   return (
     <div className="flex flex-1 items-center justify-center px-8 py-7">
       <div className="-mt-16 w-full max-w-[640px]">
-        <div className="mb-3 flex size-9 items-center justify-center rounded-lg bg-[#F4F2EF] text-fg-muted">
+        <div className="mb-3 flex size-9 items-center justify-center rounded-lg bg-muted text-fg-muted">
           <MessageSquare className="size-[18px]" aria-hidden />
         </div>
         <h1 className="text-lg font-semibold">Ассистент мастерской</h1>

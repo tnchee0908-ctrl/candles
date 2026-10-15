@@ -14,7 +14,7 @@ interface EmptyStateProps {
 export function EmptyState({ icon, title, description, action, className }: EmptyStateProps) {
   return (
     <div className={cn('flex flex-col items-center gap-1.5 px-4 py-7 text-center text-fg-secondary', className)}>
-      <div className="mb-1 flex size-9 items-center justify-center rounded-lg bg-[#F4F2EF] text-fg-muted [&_svg]:size-[18px]">
+      <div className="mb-1 flex size-9 items-center justify-center rounded-lg bg-muted text-fg-muted [&_svg]:size-[18px]">
         {icon}
       </div>
       <div className="font-semibold text-fg">{title}</div>
@@ -32,7 +32,7 @@ export function Skeleton({ className }: { className?: string }) {
 
 export function TableSkeleton({ rows = 6, cols = 5 }: { rows?: number; cols?: number }) {
   return (
-    <div className="divide-y divide-[#F1EFEC]" aria-busy="true" aria-label="Загрузка">
+    <div className="divide-y divide-border-soft" aria-busy="true" aria-label="Загрузка">
       {Array.from({ length: rows }).map((_, r) => (
         <div key={r} className="flex h-row items-center gap-4 px-4">
           {Array.from({ length: cols }).map((__, c) => (

@@ -11,6 +11,7 @@
     --c-subtle: 250 249 247;
     --c-muted: 241 239 236;
     --c-hover: 239 237 233;
+    --c-highlight: 255 251 242;
 
     --c-border: 231 228 223;
     --c-border-strong: 214 210 203;
@@ -64,8 +65,75 @@
     --c-code-fg: 231 229 228;
   }
 
+  /* Тёмная тема: те же имена переменных — классы компонентов не меняются.
+     Тёплые тёмно-серые вместо холодного чёрного, акцент чуть темнее, чтобы белый текст на кнопке читался. */
+  :root[data-theme='dark'] {
+    --c-canvas: 22 20 18;
+    --c-surface: 30 28 26;
+    --c-subtle: 36 33 31;
+    --c-muted: 44 41 38;
+    --c-hover: 50 47 43;
+    --c-highlight: 48 40 26;
+
+    --c-border: 56 52 48;
+    --c-border-strong: 74 69 64;
+    --c-border-soft: 44 41 38;
+    --c-border-hover: 96 90 84;
+
+    --c-fg: 237 234 230;
+    --c-fg-label: 216 211 205;
+    --c-fg-secondary: 190 184 177;
+    --c-fg-muted: 160 153 146;
+    --c-fg-subtle: 136 129 122;
+    --c-fg-faint: 104 98 92;
+
+    --c-accent: 196 94 54;
+    --c-accent-hover: 214 110 68;
+    --c-accent-ink: 240 160 122;
+    --c-accent-25: 40 29 23;
+    --c-accent-50: 58 38 29;
+    --c-accent-200: 112 64 44;
+
+    --c-success-bg: 24 46 32;
+    --c-success-fg: 126 208 154;
+    --c-success-dot: 74 186 116;
+    --c-success-border: 40 80 55;
+
+    --c-warning-bg: 54 42 18;
+    --c-warning-fg: 236 198 112;
+    --c-warning-dot: 230 170 50;
+    --c-warning-border: 92 72 30;
+    --c-warning-icon: 226 168 54;
+
+    --c-danger-bg: 60 26 24;
+    --c-danger-fg: 245 142 130;
+    --c-danger-dot: 236 92 80;
+    --c-danger-border: 100 44 40;
+    --c-danger-ink: 250 172 162;
+
+    --c-info-bg: 30 38 62;
+    --c-info-fg: 152 176 240;
+    --c-info-dot: 110 140 230;
+
+    --c-progress-bg: 40 32 64;
+    --c-progress-fg: 188 166 246;
+    --c-progress-dot: 150 120 236;
+
+    --c-neutral-bg: 44 41 38;
+    --c-neutral-fg: 190 184 177;
+    --c-neutral-dot: 120 113 108;
+
+    --c-code-bg: 14 13 12;
+    --c-code-fg: 231 229 228;
+  }
+
   html {
     color-scheme: light;
+  }
+
+  /* Нативные элементы (календарь, скроллбары, select) — тоже тёмные */
+  html[data-theme='dark'] {
+    color-scheme: dark;
   }
 
   body {

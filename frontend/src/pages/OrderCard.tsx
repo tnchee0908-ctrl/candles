@@ -46,7 +46,9 @@ interface Cost {
 
 type Action = 'plan' | 'start' | 'cancel' | 'complete'
 
-const parseNum = (v: string) => Number(v.replace(/\s/g, '').replace(',', '.'))
+// Число отправляем строкой «как ввели» (без перевода в JS-число): точность держит Decimal на сервере.
+const cleanNum = (v: string) => v.replace(/\s/g, '').replace(',', '.')
+const parseNum = (v: string) => Number(cleanNum(v))
 
 /** 09–12 — Карточка задания. Действия и блоки зависят от статуса. */
 export default function OrderCardPage() {
@@ -323,7 +325,7 @@ export default function OrderCardPage() {
                   onClick={() =>
                     act('complete', {
                       actual: Object.fromEntries(
-                        order.components.map((c) => [c.material_id, String(parseNum(facts[c.material_id] ?? ''))]),
+                        order.components.map((c) => [c.material_id, cleanNum(facts[c.material_id] ?? '')]),
                       ),
                     })
                   }
