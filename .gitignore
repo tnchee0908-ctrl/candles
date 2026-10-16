@@ -10,3 +10,4 @@ dist/
 # Материалы для дизайнера (локально)
 _design/
 *.tsbuildinfo
+_video/
