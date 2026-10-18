@@ -11,3 +11,4 @@ dist/
 _design/
 *.tsbuildinfo
 _video/
+_prep/

@@ -142,6 +142,8 @@ def container_name(file_id: int, filename: str) -> str:
 
 def restore_generated(filename: str, data: bytes, pii: Pseudonymizer) -> bytes:
     """Файл, созданный кодом модели: в текстовых форматах и XLSX возвращаем настоящие имена."""
+    if Path(filename).suffix.lower() not in TEXT_EXT | {".xlsx"}:
+        return data  # картинки и прочее — как есть
     try:
         return transform(filename, data, pii.unmask)
     except Exception:  # noqa: BLE001 — повреждённый или неизвестный файл отдаём как есть

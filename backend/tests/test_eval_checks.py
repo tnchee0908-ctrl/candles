@@ -173,3 +173,11 @@ def test_numbers_must_come_from_data():
     assert foreign_numbers("Свободно 77,998 кг и ещё 5 000 ₽", ['{"free": "77.9980"}']) == [Decimal("5000")]
     # даты, номера документов, проценты, годы и мелкие числа — не «числа из данных»
     assert foreign_numbers("Задание З-00042 на 23.10.2026, цех 2, рост на 15%, в 2026 году", []) == []
+
+
+def test_number_formats_are_understood():
+    from eval.run_eval import numbers_in
+
+    assert numbers_in("10 437,46 ₽ и 10,437.46 руб. и 10.437,46") == [Decimal("10437.46")] * 3
+    res = result("no_data_bitcoin", "В системе таких данных нет.")
+    assert check(res), res.checks

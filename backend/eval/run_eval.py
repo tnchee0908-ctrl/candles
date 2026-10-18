@@ -121,7 +121,10 @@ async def compute_truth(session) -> dict[str, Any]:
 # ---------- проверки ----------
 
 NUM_RE = re.compile(
-    r"(?<![\w.,])-?\d{1,3}(?:[  ]\d{3})+(?:[.,]\d+)?(?![\w])|(?<![\w.,])-?\d+(?:[.,]\d+)?(?![\w])"
+    r"(?<![\w.,])-?\d{1,3}(?:[  ]\d{3})+(?:[.,]\d+)?(?![\w])"  # 10 469,67
+    r"|(?<![\w.,])-?\d{1,3}(?:,\d{3})+\.\d+(?![\w])"  # 10,469.67 (английская запись)
+    r"|(?<![\w.,])-?\d{1,3}(?:\.\d{3})+,\d+(?![\w])"  # 10.469,67
+    r"|(?<![\w.,])-?\d+(?:[.,]\d+)?(?![\w])"
 )
 # Даты, номера документов, проценты и время — не «числа из данных», их вырезаем перед проверкой.
 NOT_NUMBERS = re.compile(
@@ -136,7 +139,11 @@ SMALL_INT = 31
 def numbers_in(text: str) -> list[Decimal]:
     out = []
     for raw in NUM_RE.findall(NOT_NUMBERS.sub(" ", text)):
-        cleaned = raw.replace(" ", "").replace(" ", "").replace(" ", "").replace(",", ".")
+        cleaned = raw.replace(" ", "").replace(" ", "").replace(" ", "")
+        if "," in cleaned and "." in cleaned:  # разделитель тысяч — тот, что стоит раньше
+            thousands = "," if cleaned.index(",") < cleaned.index(".") else "."
+            cleaned = cleaned.replace(thousands, "")
+        cleaned = cleaned.replace(",", ".")
         try:
             out.append(Decimal(cleaned))
         except InvalidOperation:
