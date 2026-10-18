@@ -25,7 +25,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     llm_primary_model: str = "gpt-4.1-mini"
     llm_fallback_model: str = "gpt-4o-mini"
-    llm_timeout_s: float = 120.0  # с запасом на Code Interpreter
+    # Потолок на один шаг модели (включая Code Interpreter) и на паузу между событиями стрима.
+    llm_timeout_s: float = 300.0
+    llm_idle_timeout_s: float = 90.0
     llm_max_tool_steps: int = 8
     # Низкая температура: ответы по учётным данным должны быть повторяемыми, а не «творческими».
     llm_temperature: float = 0.2
@@ -33,7 +35,7 @@ class Settings(BaseSettings):
     chat_user_hourly_limit: int = 0
     chat_daily_limit: int = 0
     # Модель, которая оценивает ответы в прогоне эталонных вопросов.
-    llm_judge_model: str = "gpt-4.1-mini"
+    llm_judge_model: str = "gpt-4o"
 
 
 @lru_cache

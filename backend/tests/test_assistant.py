@@ -361,3 +361,26 @@ async def test_captured_image_gets_readable_name(session, session_factory, world
     conv = await new_conversation(session, world.users["boss"])
     events, _ = await run_turn(chat, world.users["boss"], conv, "график")
     assert [e["file"]["filename"] for e in events if e["type"] == "file"] == ["график_1.png"]
+
+
+async def test_models_label_shows_every_model_that_answered(session, session_factory, world):
+    """Основная ответила на первом шаге, на втором упала — под ответом обе модели и пометка «запасная»."""
+    from app.assistant.chat import message_to_dict
+
+    primary = ScriptedProvider(
+        "primary", [call("list_recipes", {}, model="gpt-primary"), LLMRetryableError("HTTP 503")]
+    )
+    backup = ScriptedProvider("backup", [say("Рецепты: Лаванда.", model="gpt-backup")])
+    chat = ChatService(FallbackLLM([primary, backup]), session_factory)
+    conv = await new_conversation(session, world.users["tech"])
+    _, msg_id = await run_turn(chat, world.users["tech"], conv, "какие рецепты?")
+    msg = await session.get(Message, msg_id)
+    data = await message_to_dict(session, msg)
+    assert data["model"] == "gpt-primary, gpt-backup"
+    assert data["fallback_used"] is True
+
+    only_primary = ScriptedProvider("primary", [say("Привет!", model="gpt-primary")])
+    chat = ChatService(FallbackLLM([only_primary, ScriptedProvider("backup", [])]), session_factory)
+    _, msg_id = await run_turn(chat, world.users["tech"], conv, "привет")
+    data = await message_to_dict(session, await session.get(Message, msg_id))
+    assert data["model"] == "gpt-primary" and data["fallback_used"] is False

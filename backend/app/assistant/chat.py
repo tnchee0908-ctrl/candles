@@ -78,6 +78,7 @@ def build_instructions(
 class TurnState:
     text: str = ""
     model: str | None = None
+    models: list[str] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     code: list[dict[str, Any]] = field(default_factory=list)
     files: list[dict[str, Any]] = field(default_factory=list)
@@ -208,6 +209,7 @@ class ChatService:
                     tools=tools.specs(),
                     code_container=container_id,
                     timeout=self.settings.llm_timeout_s,
+                    idle_timeout=self.settings.llm_idle_timeout_s,
                     temperature=self.settings.llm_temperature,
                 )
                 async for event in self.llm.stream(request, stats):
@@ -227,9 +229,11 @@ class ChatService:
                         state.code.append(entry)
                         await emit({"type": "code", **entry})
                     elif isinstance(event, Completed):
-                        if state.model != event.model:
-                            state.model = event.model
-                            await emit({"type": "model", "model": event.model})
+                        # Шаги могут отвечать разные модели (основная упала на втором шаге) — показываем все.
+                        if event.model not in state.models:
+                            state.models.append(event.model)
+                            state.model = ", ".join(state.models)[:64]
+                            await emit({"type": "model", "model": state.model})
                         items.extend(event.output_items)
                 tail = unmasker.flush()
                 if tail:
@@ -425,6 +429,7 @@ class ChatService:
                 "action_ids": [a["id"] for a in state.actions],
                 "error": state.error,
                 "llm_attempts": state.llm_attempts,
+                "models": state.models,
             }
             await session.commit()
 
@@ -568,7 +573,8 @@ async def message_to_dict(session: AsyncSession, msg: Message) -> dict[str, Any]
         "files": files,
         "actions": actions,
         "error": msg.meta.get("error"),
-        "fallback_used": any(not a.get("ok") for a in msg.meta.get("llm_attempts") or []),
+        # «Запасная модель» — только если она действительно ответила хотя бы на одном шаге.
+        "fallback_used": any(a.get("ok") and a.get("fallback") for a in msg.meta.get("llm_attempts") or []),
         "llm_attempts": msg.meta.get("llm_attempts") or [],
         "system_note": bool(msg.meta.get("system_note")),
         "created_at": msg.created_at.isoformat() if msg.created_at else None,

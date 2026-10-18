@@ -25,7 +25,10 @@ class LLMRequest:
     tools: list[ToolSpec] = field(default_factory=list)
     # id контейнера Code Interpreter; None — встроенный инструмент выключен.
     code_container: str | None = None
-    timeout: float = 60.0
+    # timeout — потолок на весь шаг (включая работу Code Interpreter), idle_timeout — сколько можно
+    # ждать следующего события стрима. Долгий расчёт идёт с событиями прогресса и не обрывается.
+    timeout: float = 300.0
+    idle_timeout: float = 90.0
     temperature: float | None = None
 
 
@@ -56,7 +59,13 @@ class Completed:
     usage: dict[str, Any] = field(default_factory=dict)
 
 
-LLMEvent = TextDelta | ToolCall | CodeRun | Completed
+@dataclass
+class Heartbeat:
+    """Служебное событие стрима (прогресс, начало блока): пользователю не показывается,
+    но означает, что модель жива — по нему сбрасывается таймер простоя."""
+
+
+LLMEvent = TextDelta | ToolCall | CodeRun | Completed | Heartbeat
 
 
 class LLMError(Exception):
@@ -67,6 +76,13 @@ class LLMError(Exception):
 
 class LLMRetryableError(LLMError):
     """429, 5xx, таймаут, обрыв соединения — имеет смысл попробовать запасную модель."""
+
+
+class LLMModelUnavailable(LLMRetryableError):
+    """Именно эта модель недоступна: нет такой модели (404 model_not_found), нет доступа к ней,
+    модель не поддерживает параметр запроса. Другая модель может ответить — переключаемся."""
+
+    user_message = "Модели ассистента сейчас недоступны. Администратору: проверьте названия моделей в .env."
 
 
 class LLMRequestError(LLMError):

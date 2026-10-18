@@ -107,3 +107,100 @@ async def test_region_block_from_openai_is_explained():
         async for _ in provider.stream(LLMRequest(instructions="i", input=[])):
             pass
     assert "страну" in exc.value.user_message
+
+
+def _openai_error(status: int, code: str, message: str):
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    body = {"error": {"code": code, "message": message}}
+    response = httpx.Response(status, request=request, json=body)
+    cls = {400: openai.BadRequestError, 403: openai.PermissionDeniedError, 404: openai.NotFoundError}[status]
+    return cls(message, response=response, body=body["error"])
+
+
+def _broken_openai(error):
+    from app.assistant.llm.openai_provider import OpenAIProvider
+
+    class Responses:
+        async def create(self, **kwargs):
+            raise error
+
+    class Client:
+        responses = Responses()
+
+    return OpenAIProvider(Client(), "gpt-4.1-mini-broken")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "status,code,message",
+    [
+        (404, "model_not_found", "The model `gpt-4.1-mini-broken` does not exist"),
+        (403, "model_not_found", "Project does not have access to model gpt-x"),
+        (
+            400,
+            "unsupported_parameter",
+            "Unsupported parameter: 'temperature' is not supported with this model.",
+        ),
+    ],
+)
+async def test_broken_primary_model_switches_to_fallback(status, code, message):
+    """Испортили имя основной модели в .env — отвечает запасная, а не «переформулируйте вопрос»."""
+    backup = ScriptedProvider("gpt-4o-mini", [say("ответ запасной")])
+    stats = RouterStats()
+    llm = FallbackLLM([_broken_openai(_openai_error(status, code, message)), backup])
+    assert await collect(llm, stats) == "ответ запасной"
+    assert [(a["model"], a["ok"], a["fallback"]) for a in stats.attempts] == [
+        ("gpt-4.1-mini-broken", False, False),
+        ("gpt-4o-mini", True, True),
+    ]
+
+
+async def test_real_request_error_is_still_not_retried():
+    error = _openai_error(400, "context_length_exceeded", "This model's maximum context length is exceeded")
+    backup = ScriptedProvider("backup", [say("не должен быть вызван")])
+    with pytest.raises(LLMRequestError):
+        await collect(FallbackLLM([_broken_openai(error), backup]))
+    assert backup.requests == []
+
+
+async def test_stream_error_before_first_token_switches_to_fallback():
+    """Ошибка внутри уже открытого стрима, но до первого текста: пользователь ничего не видел — переключаемся."""
+    from app.assistant.llm.base import Heartbeat
+
+    primary = ScriptedProvider("primary", [[Heartbeat(), Heartbeat(), LLMRetryableError("stream error")]])
+    backup = ScriptedProvider("backup", [say("запасная ответила")])
+    stats = RouterStats()
+    assert await collect(FallbackLLM([primary, backup]), stats) == "запасная ответила"
+    assert stats.attempts[0]["ok"] is False and stats.attempts[1]["ok"] is True
+
+
+async def test_long_code_run_with_progress_events_is_not_cut():
+    """Шаг идёт дольше таймаута простоя, но модель присылает события прогресса — не обрываем."""
+    from app.assistant.llm.base import Heartbeat
+
+    class LongCode(ScriptedProvider):
+        async def stream(self, request):
+            self.requests.append(request)
+            for _ in range(6):
+                await asyncio.sleep(0.1)
+                yield Heartbeat()
+            yield TextDelta("посчитал")
+
+    req = LLMRequest(instructions="i", input=[], timeout=5, idle_timeout=0.3)
+    backup = ScriptedProvider("backup", [say("не нужен")])
+    assert await collect(FallbackLLM([LongCode("primary", []), backup]), req=req) == "посчитал"
+    assert backup.requests == []
+
+
+async def test_silent_stream_hits_idle_timeout():
+    class Silent(ScriptedProvider):
+        async def stream(self, request):
+            self.requests.append(request)
+            await asyncio.sleep(5)
+            yield TextDelta("никогда")
+
+    req = LLMRequest(instructions="i", input=[], timeout=10, idle_timeout=0.2)
+    backup = ScriptedProvider("backup", [say("успел")])
+    assert await collect(FallbackLLM([Silent("primary", []), backup]), req=req) == "успел"

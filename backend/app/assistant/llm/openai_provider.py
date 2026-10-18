@@ -10,8 +10,10 @@ from openai import NOT_GIVEN, AsyncOpenAI
 from app.assistant.llm.base import (
     CodeRun,
     Completed,
+    Heartbeat,
     LLMAuthError,
     LLMEvent,
+    LLMModelUnavailable,
     LLMRegionError,
     LLMRequest,
     LLMRequestError,
@@ -85,6 +87,8 @@ class OpenAIProvider:
                     raise LLMRetryableError(f"{etype}: {getattr(err, 'message', '')}")
                 elif etype == "error":
                     raise LLMRetryableError(f"stream error: {getattr(event, 'message', '')}")
+                else:
+                    yield Heartbeat()  # прогресс: модель думает, Code Interpreter считает и т.п.
         except (openai.APITimeoutError, openai.APIConnectionError) as exc:
             raise LLMRetryableError(f"{type(exc).__name__}") from exc
         except openai.RateLimitError as exc:
@@ -92,12 +96,35 @@ class OpenAIProvider:
         except openai.APIStatusError as exc:
             if exc.status_code >= 500:
                 raise LLMRetryableError(f"HTTP {exc.status_code}") from exc
+            details = f"{getattr(exc, 'code', '') or ''} {exc.message}".lower()
+            if _model_specific(exc.status_code, details):
+                # Проблема именно этой модели — другая (запасная) может ответить.
+                raise LLMModelUnavailable(f"HTTP {exc.status_code}: {exc.message[:200]}") from exc
             if exc.status_code in (401, 403):
-                details = f"{getattr(exc, 'code', '')} {exc.message}".lower()
                 if "unsupported_country" in details or "country, region" in details:
                     raise LLMRegionError(f"HTTP {exc.status_code}: region not supported") from exc
                 raise LLMAuthError(f"HTTP {exc.status_code}") from exc
             raise LLMRequestError(f"HTTP {exc.status_code}: {exc.message[:300]}") from exc
+
+
+MODEL_ERROR_MARKERS = (
+    "model_not_found",
+    "does not exist",
+    "do not have access to the model",
+    "does not have access to model",
+    "unsupported_model",
+    "unsupported_parameter",
+    "unsupported_value",
+    "is not supported with this model",
+)
+
+
+def _model_specific(status: int, details: str) -> bool:
+    """Граница «плохой запрос» / «эта модель недоступна»: 404 — всегда про модель (других адресов
+    у нас нет), 400/403 — если OpenAI прямо говорит о модели или её параметрах."""
+    if status == 404:
+        return True
+    return status in (400, 403) and any(m in details for m in MODEL_ERROR_MARKERS)
 
 
 def _to_input_items(output: list[Any]) -> list[dict[str, Any]]:
