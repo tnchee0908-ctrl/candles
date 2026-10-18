@@ -33,6 +33,38 @@ def upgrade() -> None:
     )
     op.create_index("ix_login_failures_at", "login_failures", ["at"])
 
+    # Запуск задания теперь выдаёт материал в цех (резерв списывается). Задания, запущенные
+    # до этой версии, переводим на новую схему: их резерв становится списанием на дату запуска.
+    op.execute(
+        """
+        INSERT INTO consumptions (order_id, batch_id, material_id, qty, unit_cost_rub, consumed_at)
+        SELECT r.order_id, r.batch_id, r.material_id, r.qty, b.unit_cost_rub, COALESCE(o.started_at, now())
+        FROM reservations r
+        JOIN batches b ON b.id = r.batch_id
+        JOIN production_orders o ON o.id = r.order_id
+        WHERE o.status = 'in_progress'
+        """
+    )
+    op.execute(
+        """
+        UPDATE batches b
+        SET remaining_qty = b.remaining_qty - s.qty, reserved_qty = b.reserved_qty - s.qty
+        FROM (
+            SELECT r.batch_id, sum(r.qty) AS qty
+            FROM reservations r JOIN production_orders o ON o.id = r.order_id
+            WHERE o.status = 'in_progress'
+            GROUP BY r.batch_id
+        ) s
+        WHERE b.id = s.batch_id
+        """
+    )
+    op.execute(
+        """
+        DELETE FROM reservations r USING production_orders o
+        WHERE o.id = r.order_id AND o.status = 'in_progress'
+        """
+    )
+
 
 def downgrade() -> None:
     op.drop_index("ix_login_failures_at", table_name="login_failures")

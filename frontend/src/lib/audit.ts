@@ -116,8 +116,20 @@ function componentsChange(
   const full = (xs: ComponentSnapshot[]) => xs.filter((c) => Number(c.reserved) >= Number(c.required)).length;
   const from = before ? full(Object.values(before)) : 0;
   const to = full(all);
-  if (from === to) return null;
-  return { field: 'components', label: 'Полный резерв', from: `${from} из ${all.length}`, to: `${to} из ${all.length}` };
+  if (from !== to)
+    return { field: 'components', label: 'Полный резерв', from: `${from} из ${all.length}`, to: `${to} из ${all.length}` };
+  // Число полностью зарезервированных не изменилось, но резерв вырос (дорезерв части дефицита) —
+  // показываем это, а не прочерк в «Было».
+  const grown = before
+    ? Object.entries(after).filter(([id, c]) => Number(c.reserved) > Number(before[id]?.reserved ?? 0)).length
+    : 0;
+  if (!grown) return null;
+  return {
+    field: 'components',
+    label: 'Резерв',
+    from: `полный по ${from} из ${all.length}`,
+    to: `дозарезервировано по ${grown} из ${all.length}`,
+  };
 }
 
 /**
