@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,6 +33,11 @@ class ReceiptLine:
     price: Decimal
     currency: str
     comment: str | None = None
+
+
+def free_qty(b: Batch) -> Decimal:
+    """Свободный остаток есть только у принятой партии: брак и непроверенное взять нельзя."""
+    return b.remaining_qty - b.reserved_qty if b.status == BatchStatus.ACCEPTED else Decimal(0)
 
 
 def batch_snapshot(b: Batch) -> dict[str, Any]:
@@ -123,7 +128,14 @@ async def create_receipt(
             action="Партия создана",
             before=None,
             after=batch_snapshot(batch)
-            | {"material": material.code, "price": batch.price, "currency": batch.currency},
+            | {
+                "material": material.code,
+                "price": batch.price,
+                "currency": batch.currency,
+                "rate": batch.rate,
+                "rate_date": batch.rate_date,
+                "unit_cost_rub": batch.unit_cost_rub,
+            },
         )
 
     await session.refresh(receipt, ["number"])
@@ -179,8 +191,11 @@ SORTABLE = {
     "qty": Batch.qty,
     "remaining_qty": Batch.remaining_qty,
     "reserved_qty": Batch.reserved_qty,
-    "free_qty": Batch.remaining_qty - Batch.reserved_qty,
-    "price": Batch.price,
+    "free_qty": case(
+        (Batch.status == BatchStatus.ACCEPTED, Batch.remaining_qty - Batch.reserved_qty), else_=0
+    ),
+    # Цены в разных валютах сравниваем в рублях, иначе 50 USD оказалось бы «дешевле» 60 RUB.
+    "price": Batch.price * Batch.rate,
     "currency": Batch.currency,
     "unit_cost_rub": Batch.unit_cost_rub,
     "status": Batch.status,

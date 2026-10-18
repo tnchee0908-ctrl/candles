@@ -1,5 +1,11 @@
 name: candles
 
+# Один образ бэкенда на четыре сервиса (API, воркер, два мока): собирается один раз.
+x-backend-image: &backend-image
+  image: candles-backend:local
+  pull_policy: never
+  restart: unless-stopped
+
 x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://candles:candles@db:5432/candles
   TEST_DATABASE_URL: postgresql+asyncpg://candles:candles@db:5432/candles_test
@@ -12,13 +18,16 @@ x-backend-env: &backend-env
   LLM_JUDGE_MODEL: ${LLM_JUDGE_MODEL:-gpt-4o}
   LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-300}
   LLM_IDLE_TIMEOUT_S: ${LLM_IDLE_TIMEOUT_S:-90}
-  JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+  # Пусто — бэкенд сгенерирует случайный секрет при старте (вход сбросится после перезапуска).
+  JWT_SECRET: ${JWT_SECRET:-}
   CHAT_USER_HOURLY_LIMIT: ${CHAT_USER_HOURLY_LIMIT:-0}
   CHAT_DAILY_LIMIT: ${CHAT_DAILY_LIMIT:-0}
 
+# Порты публикуются только на localhost: снаружи машины к API и мокам не подключиться.
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: candles
       POSTGRES_PASSWORD: candles
@@ -33,34 +42,24 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       retries: 30
 
-  rates-mock:
-    build: ./backend
-    command: uvicorn mocks.rates:app --host 0.0.0.0 --port 8101
-    ports: ["8101:8101"]
-
-  marking-mock:
-    build: ./backend
-    command: uvicorn mocks.marking:app --host 0.0.0.0 --port 8102
-    environment:
-      MARKING_FAILURE_RATE: ${MARKING_FAILURE_RATE:-0.3}
-      MARKING_SLOW_RATE: ${MARKING_SLOW_RATE:-0.1}
-      MARKING_SLOW_SECONDS: ${MARKING_SLOW_SECONDS:-10}
-    ports: ["8102:8102"]
-
   backend:
-    build: ./backend
+    <<: *backend-image
+    build:
+      context: ./backend
+      target: runtime
     environment: *backend-env
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
       rates-mock: { condition: service_started }
       marking-mock: { condition: service_started }
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
     volumes:
       - ./backend/eval/reports:/app/eval/reports
     healthcheck:
@@ -68,8 +67,22 @@ services:
       interval: 3s
       retries: 40
 
+  rates-mock:
+    <<: *backend-image
+    command: uvicorn mocks.rates:app --host 0.0.0.0 --port 8101
+    ports: ["127.0.0.1:8101:8101"]
+
+  marking-mock:
+    <<: *backend-image
+    command: uvicorn mocks.marking:app --host 0.0.0.0 --port 8102
+    environment:
+      MARKING_FAILURE_RATE: ${MARKING_FAILURE_RATE:-0.3}
+      MARKING_SLOW_RATE: ${MARKING_SLOW_RATE:-0.1}
+      MARKING_SLOW_SECONDS: ${MARKING_SLOW_SECONDS:-10}
+    ports: ["127.0.0.1:8102:8102"]
+
   worker:
-    build: ./backend
+    <<: *backend-image
     command: arq app.worker.WorkerSettings
     environment: *backend-env
     depends_on:
@@ -77,9 +90,22 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     depends_on:
       backend: { condition: service_healthy }
-    ports: ["8080:80"]
+    ports: ["127.0.0.1:8080:80"]
+
+  # Тесты — отдельный образ (runtime + dev-зависимости + tests/), в рабочие образы они не попадают.
+  # Запуск: docker compose run --rm tests
+  tests:
+    build:
+      context: ./backend
+      target: test
+    image: candles-backend-tests:local
+    profiles: ["test"]
+    environment: *backend-env
+    depends_on:
+      db: { condition: service_healthy }
 
 volumes:
   pgdata:

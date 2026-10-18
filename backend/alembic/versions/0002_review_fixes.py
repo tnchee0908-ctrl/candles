@@ -1,4 +1,4 @@
-"""review fixes: supplier spelling variants
+"""review fixes: supplier spelling variants, login failures
 
 Revision ID: 0002
 Revises: 0001
@@ -23,7 +23,18 @@ def upgrade() -> None:
         "suppliers",
         sa.Column("aliases", postgresql.JSONB(), server_default=sa.text("'[]'::jsonb"), nullable=False),
     )
+    # Неудачные входы — для ограничения перебора паролей.
+    op.create_table(
+        "login_failures",
+        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column("username", sa.String(64), nullable=False),
+        sa.Column("ip", sa.String(64), nullable=False),
+        sa.Column("at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+    )
+    op.create_index("ix_login_failures_at", "login_failures", ["at"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_login_failures_at", table_name="login_failures")
+    op.drop_table("login_failures")
     op.drop_column("suppliers", "aliases")

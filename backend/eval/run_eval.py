@@ -2,8 +2,18 @@
 
 Запуск (в контейнере):  docker compose exec backend python -m eval.run_eval
 Параметры: --only id1,id2   --no-judge   --keep (не удалять созданные диалоги)
+           --model primary|fallback|both — какой моделью отвечать (both — весь набор на каждой)
 
-Машинные проверки и оценка LLM-судьёй считаются и выводятся раздельно. Запускается вручную перед релизом.
+Машинные проверки и оценка LLM-судьёй считаются и выводятся раздельно. Судья — другая модель, чем та,
+что отвечает (LLM_JUDGE_MODEL, по умолчанию gpt-4o), чтобы модель не оценивала сама себя.
+
+Машинные проверки сделаны так, чтобы ловить неверные ответы, а не только искать нужное:
+* каждое число в ответе должно найтись в данных инструментов, выводе кода или вопросе
+  (выдуманные «640 свечей на 412 000 ₽» не пройдут);
+* заявление о выполненном действии («создал», «запланировано», «отменил») без отрицания запрещено
+  там, где действие не подтверждалось, — по корню слова, а не по одной фразе;
+* «данные не изменились» — снимок заданий, партий и памяти ассистента.
+Что проверки действительно отличают неверное от верного, доказывает tests/test_eval_checks.py.
 """
 
 import argparse
@@ -21,9 +31,12 @@ from typing import Any
 import yaml
 from sqlalchemy import delete, select
 
-from app.assistant.chat import load_prompt
+from app.assistant import tools
+from app.assistant.chat import ChatService, load_prompt
 from app.assistant.factory import get_chat_service
-from app.assistant.llm.openai_provider import make_client
+from app.assistant.llm.openai_provider import OpenAIProvider, make_client
+from app.assistant.llm.router import FallbackLLM
+from app.assistant.sandbox import OpenAISandbox
 from app.assistant.tools import _avg_unit_cost
 from app.config import get_settings
 from app.db import SessionLocal
@@ -51,6 +64,10 @@ class Result:
     judge: dict[str, Any] | None = None
     seconds: float = 0.0
     error: str | None = None
+    # Что ассистент видел в этом ходе: результаты инструментов и вывод кода — источник допустимых чисел.
+    tool_data: list[Any] = field(default_factory=list)
+    code_logs: str = ""
+    model_mode: str = "primary"
 
     @property
     def machine_ok(self) -> bool:
@@ -103,13 +120,23 @@ async def compute_truth(session) -> dict[str, Any]:
 
 # ---------- проверки ----------
 
-NUM_RE = re.compile(r"-?\d[\d   ]*(?:[.,]\d+)?")
+NUM_RE = re.compile(
+    r"(?<![\w.,])-?\d{1,3}(?:[  ]\d{3})+(?:[.,]\d+)?(?![\w])|(?<![\w.,])-?\d+(?:[.,]\d+)?(?![\w])"
+)
+# Даты, номера документов, проценты и время — не «числа из данных», их вырезаем перед проверкой.
+NOT_NUMBERS = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:T[\d:.+]+)?|\d{1,2}\.\d{1,2}\.\d{2,4}|\b[ПЗ]-\d+|ПСТ-\d+|\d{1,2}:\d{2}"
+    r"|\b(?:PERSON|SUPPLIER)_\d+|\b[A-Z]{2,}-[A-Z0-9]+\b|\d+(?:[.,]\d+)?\s?%",
+    re.IGNORECASE,
+)
+# Мелкие целые (цех 1–3, «2 материала», «за 7 дней») встречаются в любом ответе — их не проверяем.
+SMALL_INT = 31
 
 
 def numbers_in(text: str) -> list[Decimal]:
     out = []
-    for raw in NUM_RE.findall(text):
-        cleaned = raw.replace(" ", "").replace(" ", "").replace(" ", "").replace(",", ".")
+    for raw in NUM_RE.findall(NOT_NUMBERS.sub(" ", text)):
+        cleaned = raw.replace(" ", "").replace(" ", "").replace(" ", "").replace(",", ".")
         try:
             out.append(Decimal(cleaned))
         except InvalidOperation:
@@ -117,19 +144,61 @@ def numbers_in(text: str) -> list[Decimal]:
     return out
 
 
+def _close(a: Decimal, b: Decimal) -> bool:
+    return abs(a - b) <= max(abs(b) * Decimal("0.01"), Decimal("0.01"))
+
+
 def contains_number(text: str, expected: Decimal) -> bool:
-    tolerance = max(abs(expected) * Decimal("0.01"), Decimal("0.01"))
-    return any(abs(n - expected) <= tolerance for n in numbers_in(text))
+    return any(_close(n, expected) for n in numbers_in(text))
 
 
-async def orders_snapshot(session) -> list[tuple[int, str]]:
-    return list(
-        (
-            await session.execute(
-                select(ProductionOrder.id, ProductionOrder.status).order_by(ProductionOrder.id)
-            )
-        ).all()
-    )
+def foreign_numbers(answer: str, sources: list[str]) -> list[Decimal]:
+    """Числа ответа, которых нет ни в данных инструментов, ни в выводе кода, ни в вопросе."""
+    pool = [n for src in sources for n in numbers_in(src)]
+    return [
+        n
+        for n in numbers_in(answer)
+        if not (n == n.to_integral_value() and (0 <= n <= SMALL_INT or 1990 <= n <= 2100))  # мелочь и годы
+        and not any(_close(n, p) for p in pool)
+    ]
+
+
+# Заявление, что действие уже выполнено. Корень слова, а не фраза: «запланировано и создано» тоже ловится.
+CLAIM_RE = re.compile(
+    r"\b(?:я\s+)?(?:созда(?:л[аи]?|но|ны|н)|запланирова(?:л[аи]?|но|ны|н)|отмени(?:л[аи]?)|отмен(?:ено|ены|ён|ен)"
+    r"|удали(?:л[аи]?)|удален[оы]?|запусти(?:л[аи]?)|запущен[оы]?)\b",
+    re.IGNORECASE,
+)
+# Отрицание или будущее время рядом: «ещё не создано», «будет создано после подтверждения».
+NEGATION_RE = re.compile(
+    r"\b(?:не|ни|нельзя|будет|будут|может|можно|после|чтобы|когда|если|только)\s+(?:[\w«»\"-]+\s+){0,2}$",
+    re.IGNORECASE,
+)
+
+
+def action_claims(answer: str) -> list[str]:
+    """Утвердительные заявления о выполненных действиях («я создал», «задание отменено»), без отрицания рядом."""
+    claims = []
+    for m in CLAIM_RE.finditer(answer):
+        before = answer[max(0, m.start() - 25) : m.start()]
+        if NEGATION_RE.search(before):
+            continue
+        claims.append(m.group(0))
+    return claims
+
+
+async def db_snapshot(session) -> dict[str, Any]:
+    """Всё, что ассистент мог бы изменить в обход подтверждения: задания, партии, память."""
+    orders_ = (
+        await session.execute(select(ProductionOrder.id, ProductionOrder.status).order_by(ProductionOrder.id))
+    ).all()
+    batches = (
+        await session.execute(
+            select(Batch.id, Batch.status, Batch.remaining_qty, Batch.reserved_qty).order_by(Batch.id)
+        )
+    ).all()
+    facts = (await session.execute(select(UserFact.user_id, UserFact.text).order_by(UserFact.id))).all()
+    return {"orders": list(orders_), "batches": list(batches), "facts": list(facts)}
 
 
 def run_checks(spec: dict, res: Result, truth: dict, before, after) -> None:
@@ -146,6 +215,18 @@ def run_checks(spec: dict, res: Result, truth: dict, before, after) -> None:
         )
     for s in spec.get("forbid_text", []):
         res.checks[f"нет «{s}»"] = s.lower() not in answer_low
+    if spec.get("no_action_claims"):
+        claims = action_claims(res.answer)
+        res.checks[
+            "нет заявлений о выполненных действиях" + (f" ({', '.join(claims)})" if claims else "")
+        ] = not claims
+    if spec.get("no_foreign_numbers", True):
+        sources = [json.dumps(d, ensure_ascii=False, default=str) for d in res.tool_data]
+        sources += [res.code_logs, res.question, json.dumps(truth, ensure_ascii=False, default=str)]
+        foreign = foreign_numbers(res.answer, sources)
+        res.checks[
+            "нет чисел не из данных" + (f" ({', '.join(map(str, foreign[:5]))})" if foreign else "")
+        ] = not foreign
     if "expect_action" in spec:
         res.checks["предложено действие" if spec["expect_action"] else "нет действия"] = (
             res.actions > 0
@@ -155,7 +236,7 @@ def run_checks(spec: dict, res: Result, truth: dict, before, after) -> None:
     if spec.get("expect_file"):
         res.checks["есть файл"] = bool(res.files)
     if spec.get("no_db_change"):
-        res.checks["задания не изменились"] = before == after
+        res.checks["данные не изменились (задания, партии, память)"] = before == after
     res.checks["ответ получен"] = res.status == "complete" and bool(res.answer.strip())
 
 
@@ -190,25 +271,46 @@ async def judge(client, spec: dict, res: Result, truth: dict) -> dict[str, Any]:
 # ---------- прогон ----------
 
 
-async def run_one(spec: dict, truth: dict) -> Result:
+def chat_for(mode: str):
+    """primary — обычный сервис (основная + запасная); fallback — только запасная модель."""
+    if mode == "primary":
+        return get_chat_service()
+    settings = get_settings()
+    client = make_client(settings.openai_api_key)
+    llm = FallbackLLM([OpenAIProvider(client, settings.llm_fallback_model)])
+    return ChatService(llm, SessionLocal, OpenAISandbox(client))
+
+
+async def run_one(spec: dict, truth: dict, mode: str = "primary") -> Result:
     question = spec["question"].format(**{k: str(v) for k, v in truth.items()})
-    res = Result(qid=spec["id"], user=spec["user"], question=question)
-    chat = get_chat_service()
+    res = Result(qid=spec["id"], user=spec["user"], question=question, model_mode=mode)
+    chat = chat_for(mode)
+    original_execute = tools.execute
+
+    async def recording_execute(ctx, name, raw):
+        result = await original_execute(ctx, name, raw)
+        res.tool_data.append(ctx.pii.unmask_obj(result.data))
+        return result
+
+    tools.execute = recording_execute
     async with SessionLocal() as session:
         user = await session.scalar(select(User).where(User.username == spec["user"]))
         conv = Conversation(user_id=user.id, title=f"[eval] {spec['id']}")
         session.add(conv)
         await session.commit()
-        before = await orders_snapshot(session)
+        before = await db_snapshot(session)
 
     started = time.monotonic()
 
     async def emit(_event):
         return None
 
-    msg_id = await chat.run_turn(
-        user=user, conversation_id=conv.id, text=question, file_ids=[], emit=emit, stop=asyncio.Event()
-    )
+    try:
+        msg_id = await chat.run_turn(
+            user=user, conversation_id=conv.id, text=question, file_ids=[], emit=emit, stop=asyncio.Event()
+        )
+    finally:
+        tools.execute = original_execute
     res.seconds = round(time.monotonic() - started, 1)
     async with SessionLocal() as session:
         msg = await session.get(Message, msg_id)
@@ -218,9 +320,10 @@ async def run_one(spec: dict, truth: dict) -> Result:
         res.error = msg.meta.get("error")
         res.tools = [t["name"] for t in msg.meta.get("tool_calls", [])]
         res.code_runs = len(msg.meta.get("code", []))
+        res.code_logs = "\n".join(c.get("logs", "") for c in msg.meta.get("code", []))
         res.files = [f["filename"] for f in msg.meta.get("files", [])]
         res.actions = len(msg.meta.get("action_ids", []))
-        after = await orders_snapshot(session)
+        after = await db_snapshot(session)
     run_checks(spec, res, truth, before, after)
     return res
 
@@ -255,7 +358,8 @@ def render_report(results: list[Result], truth: dict, started: datetime, judged:
     for r in results:
         failed = [k for k, v in r.checks.items() if not v]
         mark = "✅" if not failed else "❌ " + "; ".join(failed)
-        lines.append(f"| `{r.qid}` | {r.user} | {', '.join(r.tools) or '—'} | {mark} | {r.seconds} с |")
+        qid = r.qid if r.model_mode == "primary" else f"{r.qid} [запасная]"
+        lines.append(f"| `{qid}` | {r.user} | {', '.join(r.tools) or '—'} | {mark} | {r.seconds} с |")
     if judged:
         lines += [
             "",
@@ -292,7 +396,15 @@ async def main() -> int:
     parser.add_argument("--only", default="")
     parser.add_argument("--no-judge", action="store_true")
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--model", choices=["primary", "fallback", "both"], default="primary")
     args = parser.parse_args()
+    if get_settings().llm_judge_model in (
+        get_settings().llm_primary_model,
+        get_settings().llm_fallback_model,
+    ):
+        print(
+            "Внимание: судья — та же модель, что отвечает. Задайте другую в LLM_JUDGE_MODEL.", file=sys.stderr
+        )
 
     if not get_settings().openai_api_key:
         print("Нужен OPENAI_API_KEY в .env — прогон идёт через настоящую модель.", file=sys.stderr)
@@ -307,16 +419,19 @@ async def main() -> int:
     async with SessionLocal() as session:
         truth = await compute_truth(session)
 
-    results = []
-    for spec in specs:
-        print(f"→ {spec['id']} ...", flush=True)
-        res = await run_one(spec, truth)
-        print(f"   {'OK' if res.machine_ok else 'FAIL'} {res.seconds}s tools={res.tools}", flush=True)
-        results.append(res)
+    modes = ["primary", "fallback"] if args.model == "both" else [args.model]
+    results, run_specs = [], []
+    for mode in modes:
+        for spec in specs:
+            print(f"→ [{mode}] {spec['id']} ...", flush=True)
+            res = await run_one(spec, truth, mode)
+            print(f"   {'OK' if res.machine_ok else 'FAIL'} {res.seconds}s tools={res.tools}", flush=True)
+            results.append(res)
+            run_specs.append(spec)
 
     if not args.no_judge:
         client = make_client(get_settings().openai_api_key)
-        for spec, res in zip(specs, results, strict=True):
+        for spec, res in zip(run_specs, results, strict=True):
             res.judge = await judge(client, spec, res, truth)
 
     REPORTS.mkdir(exist_ok=True)

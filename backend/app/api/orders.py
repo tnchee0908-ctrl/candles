@@ -7,17 +7,19 @@ from sqlalchemy import select
 
 from app.api.converters import audit_out, components_out, marking_out, order_row
 from app.deps import ActorDep, SessionDep
+from app.errors import NotFound
 from app.models import MarkingAttempt, MarkingReport, ProductionOrder
 from app.schemas import CompleteIn, OrderCard, OrderIn, OrderRow, PlanPreviewRow, ReservationOut
 from app.services import audit, orders, reports
-from app.services.permissions import Perm, require
+from app.services.common import Actor, to_jsonable
+from app.services.permissions import Perm, has_perm, require
 from app.web import Id, IdQuery
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 log = logging.getLogger(__name__)
 
 
-async def build_card(session, order_id: int) -> OrderCard:
+async def build_card(session, order_id: int, actor: Actor) -> OrderCard:
     order = await orders.load_order(session, order_id)
     res = await orders.order_reservations(session, order.id)
     cons = await orders.order_consumptions(session, order.id)
@@ -63,7 +65,10 @@ async def build_card(session, order_id: int) -> OrderCard:
             for c, b in cons
         ],
         history=[audit_out(h) for h in history],
-        marking=marking_out(report, order.number, attempts, order) if report else None,
+        # Журнал отправок в маркировку виден тем же ролям, что и страница «Маркировка».
+        marking=marking_out(report, order.number, attempts, order)
+        if report and has_perm(actor, Perm.VIEW_MARKING)
+        else None,
     )
 
 
@@ -88,7 +93,8 @@ async def preview(
 
 @router.get("/shortages")
 async def shortages(session: SessionDep, actor: ActorDep, date_from: date, date_to: date):
-    return await reports.shortages_for_period(session, actor, date_from, date_to)
+    # Количества — строками, как во всём API: float потерял бы точность.
+    return to_jsonable(await reports.shortages_for_period(session, actor, date_from, date_to))
 
 
 @router.post("", response_model=OrderCard)
@@ -107,37 +113,40 @@ async def create(body: OrderIn, session: SessionDep, actor: ActorDep):
         order = await orders.create_order(session, actor, **kwargs)
         await session.commit()
         order_id = order.id
-    return await build_card(session, order_id)
+    return await build_card(session, order_id, actor)
 
 
 @router.get("/{order_id}", response_model=OrderCard)
 async def card(order_id: Id, session: SessionDep, actor: ActorDep):
     require(actor, Perm.VIEW_STOCK)
-    return await build_card(session, order_id)
+    return await build_card(session, order_id, actor)
 
 
 @router.get("/{order_id}/cost")
 async def cost(order_id: Id, session: SessionDep, actor: ActorDep):
     number = await session.scalar(select(ProductionOrder.number).where(ProductionOrder.id == order_id))
-    return await reports.order_cost(session, actor, number or "")
+    if number is None:
+        raise NotFound("Задание не найдено.")
+    # Деньги и количества — строками, как обещано в README (float потерял бы копейки).
+    return to_jsonable(await reports.order_cost(session, actor, number))
 
 
 @router.post("/{order_id}/plan", response_model=OrderCard)
 async def plan(order_id: Id, session: SessionDep, actor: ActorDep):
     await orders.plan_order(session, actor, order_id)
-    return await build_card(session, order_id)
+    return await build_card(session, order_id, actor)
 
 
 @router.post("/{order_id}/start", response_model=OrderCard)
 async def start(order_id: Id, session: SessionDep, actor: ActorDep):
     await orders.start_order(session, actor, order_id)
-    return await build_card(session, order_id)
+    return await build_card(session, order_id, actor)
 
 
 @router.post("/{order_id}/cancel", response_model=OrderCard)
 async def cancel(order_id: Id, session: SessionDep, actor: ActorDep):
     await orders.cancel_order(session, actor, order_id)
-    return await build_card(session, order_id)
+    return await build_card(session, order_id, actor)
 
 
 @router.post("/{order_id}/complete", response_model=OrderCard)
@@ -152,4 +161,4 @@ async def complete(order_id: Id, body: CompleteIn, request: Request, session: Se
             await pool.enqueue_job("send_marking_report", report_id)
         except Exception:  # noqa: BLE001
             log.warning("Не удалось поставить отчёт %s в очередь, его подберёт cron", report_id)
-    return await build_card(session, order_id)
+    return await build_card(session, order_id, actor)

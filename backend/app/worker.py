@@ -1,7 +1,8 @@
 """Фоновые задачи (arq + Redis).
 
 Задача send_marking_report ставится сразу после завершения задания; cron poll_marking раз в 5 секунд
-подбирает отчёты, у которых подошло время повтора (или которые не удалось поставить в очередь).
+(в :00, :05, :10 …) подбирает отчёты, у которых подошло время повтора (или которые не удалось поставить
+в очередь). Строки arq пишутся один раз: у arq свой обработчик журнала, в корневой он не дублирует.
 """
 
 import logging
@@ -30,7 +31,14 @@ async def poll_marking(ctx: dict) -> int:
     return len(ids)
 
 
+async def startup(ctx: dict) -> None:
+    # arq настраивает свой обработчик журнала; без этого каждая его строка печаталась бы дважды
+    # (ещё и через корневой обработчик из basicConfig), и казалось, что cron срабатывает чаще.
+    logging.getLogger("arq").propagate = False
+
+
 class WorkerSettings:
+    on_startup = startup
     functions = [send_marking_report]
     cron_jobs = [cron(poll_marking, second=set(range(0, 60, 5)), run_at_startup=True)]
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)

@@ -2,6 +2,12 @@
 
 Черновик → Запланировано → В работе → Завершено; Черновик/Запланировано → Отменено.
 
+Движение материала (как в схеме ТЗ):
+* планирование — резерв в партиях по FIFO (материал ещё на складе, но занят);
+* запуск — материал выдан в цех: резерв СПИСЫВАЕТСЯ из партий (остаток склада уменьшается);
+* завершение — сверка с фактом: перерасход досписывается из свободного остатка по FIFO,
+  экономия возвращается в те же партии, из которых выдавали (сначала в самые новые).
+
 Конкурентность: свободный остаток партии = remaining_qty − reserved_qty. Перед резервом строки партий
 блокируются SELECT … FOR UPDATE, поэтому два параллельных запроса выстраиваются в очередь на уровне
 PostgreSQL, и второй видит уже уменьшенный свободный остаток. Страховка — CHECK reserved_qty <= remaining_qty.
@@ -350,11 +356,32 @@ async def start_order(session: AsyncSession, actor: Actor, order_id: int) -> Pro
         details = "; ".join(f"{fmt_num(s.missing)} {s.unit} «{s.material_name}»" for s in missing)
         raise Conflict(f"Нельзя запустить задание {order.number} с дефицитом. Не хватает: {details}.")
     before = order_snapshot(order)
-    order.status = OrderStatus.IN_PROGRESS.value
     order.started_at = datetime.now(UTC)
-    _audit(session, actor, order, "Задание запущено", before)
+    for comp in sorted(order.components, key=lambda c: c.material_id):
+        await _issue_component(session, order, comp)
+    order.status = OrderStatus.IN_PROGRESS.value
+    _audit(session, actor, order, "Задание запущено, материал выдан в цех", before)
     await session.commit()
     return order
+
+
+async def _issue_component(session: AsyncSession, order: ProductionOrder, comp: OrderComponent) -> None:
+    """Выдача в цех: весь резерв компонента списывается из партий (остаток и резерв уменьшаются вместе)."""
+    rows = (
+        await session.execute(
+            select(Reservation, Batch)
+            .join(Batch, Batch.id == Reservation.batch_id)
+            .where(Reservation.order_id == order.id, Reservation.material_id == comp.material_id)
+            .order_by(Batch.received_date, Batch.id)
+            .with_for_update(of=Batch)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    for reservation, batch in rows:
+        batch.reserved_qty -= reservation.qty
+        batch.remaining_qty -= reservation.qty
+        session.add(_consumption(order, batch, reservation.qty))
+        await session.delete(reservation)
 
 
 async def _release_reservations(session: AsyncSession, order: ProductionOrder) -> None:
@@ -407,8 +434,8 @@ async def complete_order(
 ) -> ProductionOrder:
     """Завершение с фактическим расходом.
 
-    Резерв списывается по FIFO в пределах факта; экономия (резерв − факт) остаётся в партиях;
-    перерасход (факт − резерв) досписывается из свободного остатка по FIFO.
+    Материал уже выдан в цех при запуске. Факт сверяем с выданным: перерасход досписываем из
+    свободного остатка по FIFO, экономию возвращаем в партии, из которых выдавали.
     Отчёт в маркировку кладётся в outbox в той же транзакции и отправляется фоном.
     """
     require(actor, Perm.MANAGE_ORDERS)
@@ -421,13 +448,16 @@ async def complete_order(
     missing_input = [c.material.name for c in order.components if c.material_id not in actual]
     if missing_input:
         raise DomainError(f"Укажите фактический расход: {', '.join(missing_input)}.")
-    for qty in actual.values():
+    for comp in order.components:
+        qty = actual[comp.material_id]
         if qty < 0:
             raise DomainError("Фактический расход не может быть отрицательным.")
+        if comp.material.unit == "шт" and qty != qty.to_integral_value():
+            raise DomainError(f"«{comp.material.name}» учитывается в штуках — укажите целое число.")
 
     before = order_snapshot(order)
     for comp in sorted(order.components, key=lambda c: c.material_id):
-        await _consume_component(session, order, comp, q_qty(actual[comp.material_id]))
+        await _settle_component(session, order, comp, q_qty(actual[comp.material_id]))
 
     order.status = OrderStatus.COMPLETED.value
     order.completed_at = datetime.now(UTC)
@@ -450,30 +480,36 @@ async def complete_order(
     return order
 
 
-async def _consume_component(
+async def _settle_component(
     session: AsyncSession, order: ProductionOrder, comp: OrderComponent, actual_qty: Decimal
 ) -> None:
-    rows = (
+    issued_rows = (
         await session.execute(
-            select(Reservation, Batch)
-            .join(Batch, Batch.id == Reservation.batch_id)
-            .where(Reservation.order_id == order.id, Reservation.material_id == comp.material_id)
-            .order_by(Batch.received_date, Batch.id)
+            select(Consumption, Batch)
+            .join(Batch, Batch.id == Consumption.batch_id)
+            .where(Consumption.order_id == order.id, Consumption.material_id == comp.material_id)
+            # Возврат экономии — в самые новые партии из выданных, чтобы старые продолжали уходить первыми.
+            .order_by(Batch.received_date.desc(), Batch.id.desc())
             .with_for_update(of=Batch)
             .execution_options(populate_existing=True)
         )
     ).all()
-    to_consume = actual_qty
-    for reservation, batch in rows:
-        take = min(reservation.qty, to_consume)
-        batch.reserved_qty -= reservation.qty  # снимаем весь резерв; неиспользованное возвращается в партию
-        batch.remaining_qty -= take
-        if take > 0:
-            session.add(_consumption(order, batch, take))
-        to_consume -= take
-        await session.delete(reservation)
+    issued = sum((c.qty for c, _ in issued_rows), Decimal(0))
 
-    if to_consume > 0:  # перерасход — досписываем из свободного остатка по FIFO
+    if actual_qty < issued:  # экономия — возвращаем на склад
+        to_return = issued - actual_qty
+        for cons, batch in issued_rows:
+            back = min(cons.qty, to_return)
+            batch.remaining_qty += back
+            cons.qty -= back
+            if cons.qty == 0:
+                await session.delete(cons)
+            to_return -= back
+            if to_return == 0:
+                break
+
+    elif actual_qty > issued:  # перерасход — досписываем из свободного остатка по FIFO
+        to_consume = actual_qty - issued
         batches = await session.scalars(
             select(Batch)
             .where(
@@ -498,7 +534,8 @@ async def _consume_component(
         if to_consume > 0:
             raise DomainError(
                 f"Не хватает {fmt_num(to_consume)} {comp.material.unit} «{comp.material.name}», "
-                "чтобы списать перерасход. Проверьте фактический расход или оформите поступление."
+                "чтобы списать перерасход. Свободного остатка нет: материал на складе либо закончился, "
+                "либо зарезервирован под другие задания. Оформите поступление или снимите резерв."
             )
     comp.actual_qty = actual_qty
     comp.reserved_qty = Decimal(0)

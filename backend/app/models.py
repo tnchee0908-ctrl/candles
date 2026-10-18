@@ -93,6 +93,17 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(256))
 
 
+class LoginFailure(Base):
+    """Неудачная попытка входа — для ограничения перебора паролей."""
+
+    __tablename__ = "login_failures"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64))
+    ip: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class Supplier(Base):
     __tablename__ = "suppliers"
 

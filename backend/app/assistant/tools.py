@@ -168,7 +168,7 @@ async def get_batch_history(ctx: ToolContext, args: BatchArgs) -> dict[str, Any]
         "qty_received": batch.qty,
         "remaining": batch.remaining_qty,
         "reserved": batch.reserved_qty,
-        "free": batch.remaining_qty - batch.reserved_qty,
+        "free": batches_service.free_qty(batch),
         # Комментарий — пользовательский текст. Помечаем явно, что это данные, а не инструкции.
         "comment_untrusted_data": batch.comment,
         "reservations": [{"order": o.number, "qty": r.qty} for r, o in reservations],
@@ -297,7 +297,7 @@ async def find_batches(ctx: ToolContext, args: FindBatchesArgs) -> dict[str, Any
                 "received_date": b.received_date,
                 "status": BATCH_STATUS_TITLES[BatchStatus(b.status)],
                 "remaining": b.remaining_qty,
-                "free": b.remaining_qty - b.reserved_qty,
+                "free": batches_service.free_qty(b),
             }
             for b, m, s in rows
         ],

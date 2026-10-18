@@ -48,7 +48,13 @@ type Action = 'plan' | 'start' | 'cancel' | 'complete'
 
 // Число отправляем строкой «как ввели» (без перевода в JS-число): точность держит Decimal на сервере.
 const cleanNum = (v: string) => v.replace(/\s/g, '').replace(',', '.')
-const parseNum = (v: string) => Number(cleanNum(v))
+// Пустое поле — «не заполнено», а не ноль: иначе отклонение посчиталось бы от нуля.
+const parseNum = (v: string) => (cleanNum(v) === '' ? NaN : Number(cleanNum(v)))
+// Штуки — только целые: половину стакана списать нельзя.
+const factOk = (v: string, unit: string) => {
+  const n = parseNum(v)
+  return n >= 0 && (unit !== 'шт' || Number.isInteger(n))
+}
 
 /** 09–12 — Карточка задания. Действия и блоки зависят от статуса. */
 export default function OrderCardPage() {
@@ -121,9 +127,11 @@ export default function OrderCardPage() {
   const completed = order.status === 'completed'
   const deficits = order.components.filter((c) => Number(c.missing_qty) > 0)
   const hasDeficit = isPlanned && deficits.length > 0
-  const factInvalid = order.components.some((c) => !(parseNum(facts[c.material_id] ?? '') >= 0))
+  const factInvalid = order.components.some((c) => !factOk(facts[c.material_id] ?? '', c.unit))
   const byMaterial = Object.fromEntries(order.components.map((c) => [c.material_id, c]))
-  const movements = completed ? order.consumptions : order.reservations
+  // После запуска материал уже выдан в цех — показываем списания, до запуска — резерв.
+  const issued = inProgress || completed
+  const movements = issued ? order.consumptions : order.reservations
   const history = order.history.map((e) => auditToEvent(e, { unit: 'шт' }))
 
   const actions = manage && (
@@ -230,7 +238,7 @@ export default function OrderCardPage() {
                   </Th>
                   {!completed && (
                     <Th align="right" className="w-[120px]">
-                      В резерве
+                      {inProgress ? 'Выдано' : 'В резерве'}
                     </Th>
                   )}
                   {isPlanned && (
@@ -280,7 +288,7 @@ export default function OrderCardPage() {
                             numeric
                             suffix={c.unit}
                             aria-label={`Факт: ${c.material}`}
-                            invalid={!(parseNum(facts[c.material_id] ?? '') >= 0)}
+                            invalid={!factOk(facts[c.material_id] ?? '', c.unit)}
                             value={facts[c.material_id] ?? ''}
                             onChange={(e) => setFacts((f) => ({ ...f, [c.material_id]: e.target.value }))}
                           />
@@ -340,8 +348,8 @@ export default function OrderCardPage() {
         <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,380px),1fr))] items-start gap-4">
           <Card>
             <CardHeader
-              title={completed ? 'Списано из партий' : 'Резерв по партиям (FIFO)'}
-              actions={!completed && <span className="text-xs text-fg-muted">старые партии — первыми</span>}
+              title={completed ? 'Списано из партий' : inProgress ? 'Выдано в цех из партий' : 'Резерв по партиям (FIFO)'}
+              actions={!issued && <span className="text-xs text-fg-muted">старые партии — первыми</span>}
             />
             {movements.length ? (
               <Table>
@@ -402,7 +410,9 @@ export default function OrderCardPage() {
                   <p className="mt-3.5 border-t border-border-soft pt-3 text-sm text-fg-secondary">
                     {completed
                       ? 'Основа расчёта: фактическое списание из партий по их себестоимости в рублях.'
-                      : !cost.complete
+                      : inProgress
+                        ? 'Посчитано по материалу, выданному в цех. Итог уточнится по факту при завершении: перерасход добавится, экономия вернётся.'
+                        : !cost.complete
                         ? 'Посчитано по текущему резерву. Зарезервирован не весь материал — итог вырастет после дорезервирования.'
                         : 'Посчитано по текущему резерву. Итог зафиксируется по фактическому списанию при завершении.'}
                   </p>

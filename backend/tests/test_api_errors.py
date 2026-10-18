@@ -131,3 +131,33 @@ async def test_database_data_error_is_400_not_500(client):
         app.router.routes = [
             r for r in app.router.routes if getattr(r, "path", "") != "/api/__test_data_error"
         ]
+
+
+async def test_token_signed_with_example_secret_is_rejected(client, world):
+    """Токен руководителя, подписанный секретом из .env.example, не принимается."""
+    from datetime import UTC, datetime, timedelta
+
+    import jwt
+
+    forged = jwt.encode(
+        {"sub": str(world.users["boss"].id), "exp": datetime.now(UTC) + timedelta(hours=1)},
+        "change-me-in-production",
+        algorithm="HS256",
+    )
+    resp = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {forged}"})
+    assert resp.status_code == 401
+    assert (await client.get("/api/auth/me")).status_code == 200  # настоящий токен работает
+
+
+async def test_login_bruteforce_is_limited(client, world):
+    for _ in range(5):
+        assert_human(await client.post("/api/auth/login", json={"username": "boss", "password": "нет"}), 400)
+    detail = assert_human(
+        await client.post("/api/auth/login", json={"username": "boss", "password": "x"}), 429
+    )
+    assert "Слишком много неудачных попыток" in detail
+    # С другого адреса тот же логин входит — один человек не может заблокировать вход другим.
+    ok = await client.post(
+        "/api/auth/login", json={"username": "boss", "password": "x"}, headers={"X-Forwarded-For": "10.0.0.7"}
+    )
+    assert ok.status_code == 200

@@ -52,6 +52,15 @@ async def completed_order_report(session, world) -> MarkingReport:
     return report
 
 
+async def make_due(session, report) -> None:
+    await session.execute(
+        MarkingReport.__table__.update()
+        .where(MarkingReport.id == report.id)
+        .values(next_attempt_at=datetime.now(UTC))
+    )
+    await session.commit()
+
+
 async def test_retry_after_lost_response_creates_no_duplicate(session, world, monkeypatch):
     monkeypatch.setattr(marking_mock, "FAILURE_RATE", 0.0)
     monkeypatch.setattr(marking_mock, "SLOW_RATE", 0.0)
@@ -61,12 +70,8 @@ async def test_retry_after_lost_response_creates_no_duplicate(session, world, mo
 
     first = await marking.send_report(session, report.id, transport=transport)
     assert first == "pending"  # таймаут → повтор позже
-    await session.execute(
-        MarkingReport.__table__.update()
-        .where(MarkingReport.id == report.id)
-        .values(next_attempt_at=datetime.now(UTC))
-    )
-    await session.commit()
+    assert await marking.send_report(session, report.id, transport=transport) == "locked"  # пауза ещё идёт
+    await make_due(session, report)
     second = await marking.send_report(session, report.id, transport=transport)
     assert second == "sent"
 
@@ -83,6 +88,7 @@ async def test_5xx_is_retried_with_growing_delay(session, world):
     report = await completed_order_report(session, world)
     delays = []
     for _ in range(3):
+        await make_due(session, report)  # «прошло время» до следующей попытки
         before = datetime.now(UTC)
         status = await marking.send_report(session, report.id, transport=Always(500))
         assert status == "pending"
@@ -99,3 +105,55 @@ async def test_4xx_is_not_retried(session, world):
 
 def test_backoff_is_capped():
     assert marking.backoff_delay(30, base=2, cap=300) <= 300 * 1.2
+
+
+async def test_manual_retry_starts_a_full_new_cycle(session, world, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "marking_max_attempts", 2)
+    report = await completed_order_report(session, world)
+    for _ in range(2):
+        await make_due(session, report)
+        await marking.send_report(session, report.id, transport=Always(503))
+    await session.refresh(report)
+    assert report.status == "failed"
+
+    await marking.retry_report(session, report.id)
+    await make_due(session, report)
+    assert (
+        await marking.send_report(session, report.id, transport=Always(503)) == "pending"
+    )  # не сразу failed
+    await make_due(session, report)
+    assert await marking.send_report(session, report.id, transport=Always(503)) == "failed"
+    numbers = list(
+        await session.scalars(
+            select(MarkingAttempt.attempt_no)
+            .where(MarkingAttempt.report_id == report.id)
+            .order_by(MarkingAttempt.id)
+        )
+    )
+    assert numbers == [1, 2, 3, 4]
+
+
+async def test_http_call_does_not_hold_the_row_lock(session_factory, world):
+    """Пока ждём сервис маркировки, строка отчёта не заблокирована: её можно взять FOR UPDATE NOWAIT."""
+    import asyncio
+
+    async with session_factory() as s:
+        report = await completed_order_report(s, world)
+    seen: list[str] = []
+
+    class Probe(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async with session_factory() as other:
+                status = await other.scalar(
+                    select(MarkingReport.status)
+                    .where(MarkingReport.id == report.id)
+                    .with_for_update(nowait=True)
+                )
+                seen.append(status)
+            return httpx.Response(200, json={"id": "ext-1"})
+
+    async with session_factory() as s:
+        assert await asyncio.wait_for(marking.send_report(s, report.id, transport=Probe()), 10) == "sent"
+    assert seen == ["pending"]

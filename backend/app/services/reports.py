@@ -178,8 +178,11 @@ async def order_cost(session: AsyncSession, actor: Actor, order_number: str) -> 
     lines = []
     total = Decimal(0)
     unpriced = []
-    if order.status == OrderStatus.COMPLETED:
-        basis = "фактическое списание"
+    issued = order.status in (OrderStatus.IN_PROGRESS, OrderStatus.COMPLETED)
+    if issued:
+        basis = (
+            "фактическое списание" if order.status == OrderStatus.COMPLETED else "материал, выданный в цех"
+        )
         rows = await orders_service.order_consumptions(session, order.id)
         by_mat: dict[int, list] = defaultdict(list)
         for cons, batch in rows:
@@ -193,9 +196,10 @@ async def order_cost(session: AsyncSession, actor: Actor, order_number: str) -> 
     for c in order.components:
         parts = by_mat.get(c.material_id, [])
         qty = sum((p[0] for p in parts), Decimal(0))
-        cost = sum((p[0] * p[1] for p in parts), Decimal(0))
+        # Итог = сумма уже округлённых строк: иначе он расходится с суммой строк на копейку.
+        cost = q_money(sum((p[0] * p[1] for p in parts), Decimal(0)))
         total += cost
-        if order.status != OrderStatus.COMPLETED and qty < c.required_qty:
+        if not issued and qty < c.required_qty:
             unpriced.append(
                 {
                     "material": c.material.name,
@@ -209,7 +213,7 @@ async def order_cost(session: AsyncSession, actor: Actor, order_number: str) -> 
                 "material": c.material.name,
                 "unit": c.material.unit,
                 "qty": qty,
-                "cost_rub": q_money(cost),
+                "cost_rub": cost,
                 "batches": [p[2] for p in parts],
             }
         )
@@ -254,7 +258,8 @@ async def consumption_by_week(
             return []
         stmt = stmt.where(Consumption.material_id.in_([m.id for m in mats]))
     show_cost = has_perm(actor, Perm.VIEW_COSTS)
-    out = []
+    found: dict[tuple[date, str], dict[str, Any]] = {}
+    materials: dict[str, tuple[str, str]] = {}
     for wk, code, name, unit, qty, cost in (await session.execute(stmt)).all():
         row = {
             "week_start": wk.date(),
@@ -265,7 +270,24 @@ async def consumption_by_week(
         }
         if show_cost:
             row["cost_rub"] = q_money(Decimal(cost))
-        out.append(row)
+        found[(row["week_start"], code)] = row
+        materials[code] = (name, unit)
+    # Недели без расхода — нулями: иначе на графике такая неделя просто пропадёт.
+    out = []
+    week = week_bounds(date_from)[0]
+    while week <= date_to:
+        for code, (name, unit) in sorted(materials.items()):
+            zero = {
+                "week_start": week,
+                "material_code": code,
+                "material": name,
+                "unit": unit,
+                "qty": Decimal(0),
+            }
+            if show_cost:
+                zero["cost_rub"] = Decimal("0.00")
+            out.append(found.get((week, code), zero))
+        week += timedelta(days=7)
     return out
 
 

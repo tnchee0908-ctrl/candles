@@ -9,8 +9,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://candles:candles@localhost:5432/candles"
     redis_url: str = "redis://localhost:6379/0"
 
-    jwt_secret: str = "dev-secret-change-me"
+    # Пусто или известное значение-заглушка — при старте генерируется случайный секрет (см. services/auth).
+    jwt_secret: str = ""
     jwt_ttl_hours: int = 12
+    # Неудачные входы: не больше N за окно с одного адреса для одного логина (и в сумме с адреса).
+    login_max_failures: int = 5
+    login_max_failures_per_ip: int = 30
+    login_window_minutes: int = 15
 
     rates_service_url: str = "http://localhost:8101"
     marking_service_url: str = "http://localhost:8102"

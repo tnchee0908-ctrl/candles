@@ -13,6 +13,7 @@ from app.models import (
     Supplier,
 )
 from app.schemas import AuditOut, BatchRow, ComponentOut, MarkingOut, OrderRow
+from app.services.batches import free_qty
 from app.services.common import fmt_num
 from app.services.orders import traffic_light
 
@@ -29,7 +30,7 @@ def batch_row(b: Batch, m: Material, s: Supplier) -> BatchRow:
         qty=b.qty,
         remaining_qty=b.remaining_qty,
         reserved_qty=b.reserved_qty,
-        free_qty=b.remaining_qty - b.reserved_qty,
+        free_qty=free_qty(b),
         price=b.price,
         currency=b.currency,
         rate=b.rate,

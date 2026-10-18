@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.deps import CurrentUser, SessionDep
 from app.models import ROLE_TITLES, User
@@ -20,9 +20,17 @@ def user_out(user: User) -> UserOut:
     )
 
 
+def client_ip(request: Request) -> str:
+    """Адрес клиента: за nginx/Caddy — первый адрес из X-Forwarded-For."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @router.post("/login", response_model=LoginOut)
-async def login(body: LoginIn, session: SessionDep) -> LoginOut:
-    user = await authenticate(session, body.username, body.password)
+async def login(body: LoginIn, request: Request, session: SessionDep) -> LoginOut:
+    user = await authenticate(session, body.username, body.password, client_ip(request))
     return LoginOut(token=create_token(user), user=user_out(user))
 
 
