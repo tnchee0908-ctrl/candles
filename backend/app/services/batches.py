@@ -52,10 +52,15 @@ async def get_or_create_supplier(session: AsyncSession, name: str) -> Supplier:
     # Ищем по нормализованному названию, чтобы «Восковой двор, ООО» не стал вторым поставщиком.
     key = supplier_core(name)
     supplier = next(
-        (s for s in await session.scalars(select(Supplier)) if supplier_core(s.name) == key), None
+        (
+            s
+            for s in await session.scalars(select(Supplier))
+            if key in {supplier_core(v) for v in [s.name, *(s.aliases or [])]}
+        ),
+        None,
     )
     if supplier is None:
-        supplier = Supplier(name=name)
+        supplier = Supplier(name=name, aliases=[])
         session.add(supplier)
         await session.flush()
     return supplier

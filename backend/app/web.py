@@ -8,6 +8,7 @@
 
 import json
 import logging
+import time
 from http import HTTPStatus
 from typing import Annotated, Any
 
@@ -263,3 +264,32 @@ async def _reject(send) -> None:
         }
     )
     await send({"type": "http.response.body", "body": payload})
+
+
+access_log = logging.getLogger("app.access")
+
+
+class AccessLogMiddleware:
+    """Журнал запросов: метод, путь, статус, время. Без query string — в параметрах бывают ПДн."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = time.monotonic()
+        status = 500
+
+        async def send_wrapper(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            access_log.info(
+                "%s %s %s %.0fms", scope["method"], scope["path"], status, (time.monotonic() - started) * 1000
+            )

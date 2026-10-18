@@ -17,6 +17,7 @@ from app.db import SessionLocal
 from app.errors import DomainError
 from app.models import Message
 from app.web import (
+    AccessLogMiddleware,
     RejectNulMiddleware,
     db_error_handler,
     http_error_handler,
@@ -65,6 +66,7 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"]
 )
 app.add_middleware(RejectNulMiddleware)
+app.add_middleware(AccessLogMiddleware)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_error_handler)
 app.add_exception_handler(DBAPIError, db_error_handler)

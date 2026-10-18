@@ -98,6 +98,8 @@ class Supplier(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
+    # Другие написания (латиницей / по-русски), по которым поставщика тоже нужно узнавать и маскировать.
+    aliases: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
 
 
 class Material(Base):

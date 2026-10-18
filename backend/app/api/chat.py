@@ -11,7 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
-from app.assistant import memory
+from app.assistant import memory, uploads
 from app.assistant.chat import ChatService, confirm_action, message_to_dict, reject_action
 from app.assistant.factory import get_chat_service
 from app.assistant.quota import check_chat_quota
@@ -197,6 +197,13 @@ async def upload_file(
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise DomainError("Файл больше 5 МБ.")
+    try:
+        # Проверяем сразу, что файл читается (и что XLSX не «zip-бомба»), а не при первом вопросе.
+        uploads.transform(name, data, lambda s: s)
+    except DomainError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — повреждённый файл
+        raise DomainError("Не удалось прочитать файл. Проверьте, что он не повреждён.") from exc
     row = ChatFile(
         conversation_id=conversation_id,
         user_id=user.id,

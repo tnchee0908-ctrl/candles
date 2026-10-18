@@ -6,7 +6,6 @@
 """
 
 import asyncio
-import io
 import json
 import logging
 import mimetypes
@@ -33,6 +32,7 @@ from app.assistant.llm.base import (
 from app.assistant.llm.router import FallbackLLM, RouterStats
 from app.assistant.pii import Pseudonymizer, StreamUnmasker
 from app.assistant.sandbox import Sandbox, SandboxError
+from app.assistant.uploads import container_name, restore_generated, sanitize_upload
 from app.config import get_settings
 from app.errors import DomainError, Forbidden, NotFound
 from app.models import ROLE_TITLES, ChatFile, Conversation, Message, PendingAction, User
@@ -304,10 +304,10 @@ class ChatService:
                 continue
             try:
                 f.container_path = await self.sandbox.upload(
-                    container_id, pii.mask(f.filename), sanitize_upload(f, pii)
+                    container_id, container_name(f.id, f.filename), sanitize_upload(f.filename, f.data, pii)
                 )
-            except SandboxError as exc:
-                log.warning("upload to sandbox failed: %s", exc)
+            except (SandboxError, DomainError) as exc:
+                log.warning("upload of file %s to sandbox failed: %s", f.id, type(exc).__name__)
         await session.commit()
         return container_id
 
@@ -396,9 +396,13 @@ class ChatService:
         for m in rows:
             content = m.content
             if m.role == "user":
-                paths = [uploaded[i].container_path for i in m.meta.get("file_ids", []) if i in uploaded]
-                if paths:
-                    content += "\n\n[Пользователь загрузил файлы: " + ", ".join(p for p in paths if p) + "]"
+                described = [
+                    f"{f.container_path} (исходное имя «{pii.mask(f.filename)}»)"
+                    for f in (uploaded[i] for i in m.meta.get("file_ids", []) if i in uploaded)
+                    if f.container_path
+                ]
+                if described:
+                    content += "\n\n[Пользователь загрузил файлы: " + ", ".join(described) + "]"
             elif m.status == "interrupted":
                 content += "\n[ответ был прерван]"
             if not content.strip():
@@ -580,41 +584,6 @@ def _safe_json(raw: str) -> Any:
 
 # ---------- файлы ----------
 
-TEXT_EXT = {".csv", ".txt", ".tsv", ".json", ".md"}
-
-
-def _decode(data: bytes) -> str:
-    for enc in ("utf-8-sig", "cp1251"):
-        try:
-            return data.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
-def _map_xlsx(data: bytes, fn: Callable[[str], str]) -> bytes:
-    from openpyxl import load_workbook
-
-    wb = load_workbook(io.BytesIO(data))
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str):
-                    cell.value = fn(cell.value)
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
-
-
-def sanitize_upload(f: ChatFile, pii: Pseudonymizer) -> bytes:
-    """Загруженный пользователем файл перед отправкой в песочницу: ПДн → псевдонимы."""
-    ext = Path(f.filename).suffix.lower()
-    if ext in TEXT_EXT:
-        return pii.mask(_decode(f.data)).encode("utf-8")
-    if ext == ".xlsx":
-        return _map_xlsx(f.data, pii.mask)
-    return f.data
-
 
 def _is_image(path: str) -> bool:
     return (mimetypes.guess_type(path)[0] or "").startswith("image/")
@@ -633,16 +602,3 @@ def is_chart_spec(filename: str, data: bytes) -> bool:
     except ValueError:
         return False
     return isinstance(spec, dict) and {"labels", "datasets"} <= spec.keys()
-
-
-def restore_generated(filename: str, data: bytes, pii: Pseudonymizer) -> bytes:
-    """Файл, созданный кодом модели: в текстовых форматах возвращаем настоящие имена."""
-    ext = Path(filename).suffix.lower()
-    try:
-        if ext in TEXT_EXT:
-            return pii.unmask(_decode(data)).encode("utf-8")
-        if ext == ".xlsx":
-            return _map_xlsx(data, pii.unmask)
-    except Exception:  # noqa: BLE001 — повреждённый файл отдаём как есть
-        log.warning("cannot restore names in %s", filename)
-    return data
