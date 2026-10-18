@@ -1,0 +1,106 @@
+# Те же проверки, что запускаются вручную (см. README, «Тесты, линтеры, эталонный прогон»).
+# Секреты не нужны: тесты не ходят в сеть и в настоящий LLM, эталонный прогон с моделью здесь не запускается.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Новый push в ту же ветку отменяет ещё идущую проверку предыдущего.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Бэкенд — ruff, миграции, pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      # Тот же PostgreSQL, что в docker-compose.yml. Порт проброшен на localhost раннера,
+      # контейнер с тестами запускается с --network host и видит его как localhost:5432.
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: candles
+          POSTGRES_PASSWORD: candles
+          POSTGRES_DB: candles
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U candles -d candles"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      RUN: >-
+        docker run --rm --network host
+        -e DATABASE_URL=postgresql+asyncpg://candles:candles@localhost:5432/candles
+        -e TEST_DATABASE_URL=postgresql+asyncpg://candles:candles@localhost:5432/candles_test
+        candles-tests
+    steps:
+      - uses: actions/checkout@v5
+      # Стадия test из backend/Dockerfile: runtime + pytest/ruff + tests/ — как в docker compose run tests.
+      - name: Сборка тестового образа
+        run: docker build --target test -t candles-tests backend
+      - name: ruff check
+        run: $RUN ruff check .
+      - name: ruff format --check
+        run: $RUN ruff format --check .
+      # База candles пустая: миграции накатываются с нуля, затем alembic check сверяет их со схемой моделей.
+      - name: Миграции на пустой базе и alembic check
+        run: $RUN sh -c "alembic upgrade head && alembic check"
+      - name: pytest
+        run: $RUN pytest -q
+
+  frontend:
+    name: Фронтенд — eslint, tsc, vite build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  # Мутанты идут ~15 минут, поэтому только на push в main и по кнопке (Run workflow), не на каждый PR.
+  mutants:
+    name: Мутанты — сила тестов
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: candles
+          POSTGRES_PASSWORD: candles
+          POSTGRES_DB: candles
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U candles -d candles"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Сборка тестового образа
+        run: docker build --target test -t candles-tests backend
+      - name: scripts/mutants.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          docker run --rm --network host \
+            -e TEST_DATABASE_URL=postgresql+asyncpg://candles:candles@localhost:5432/candles_test \
+            candles-tests sh scripts/mutants.sh | tee mutants.txt
+          # Скрипт сам не падает, а печатает «ВЫЖИЛ» для мутанта, которого тесты не поймали.
+          if grep -q "ВЫЖИЛ" mutants.txt; then echo "::error::Есть выжившие мутанты"; exit 1; fi
+          grep -q "убит" mutants.txt

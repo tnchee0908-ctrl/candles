@@ -1,5 +1,7 @@
 # Свечная мастерская: учёт производства и ИИ-ассистент
 
+[![CI](https://github.com/tnchee0908-ctrl/candles/actions/workflows/ci.yml/badge.svg)](https://github.com/tnchee0908-ctrl/candles/actions/workflows/ci.yml)
+
 Мини-система учёта склада и производства для вымышленной мастерской ароматических свечей. Поверх неё работает ИИ-ассистент, который отвечает на вопросы по данным, считает в Code Interpreter и готовит действия, выполняемые только после подтверждения пользователя.
 
 **Демо:** https://candles888.shop — логины те же, что в таблице ниже, демо-пользователи есть прямо на странице входа.
@@ -56,6 +58,8 @@ cd frontend && npm install && npm run lint && npm run build
 docker compose exec backend python -m eval.run_eval                 # эталонные вопросы, нужен OPENAI_API_KEY
 docker compose exec backend python -m eval.run_eval --model both    # тот же набор на основной и на запасной модели
 ```
+
+На каждый push и pull request то же самое запускает GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): ruff, `alembic upgrade head` на пустой базе и `alembic check` (миграции совпадают с моделями), pytest на PostgreSQL 16, eslint и сборка фронтенда. Мутанты (~15 минут) идут на push в `main` и по кнопке Run workflow. Ключ OpenAI в CI не нужен: эталонный прогон с моделью там не запускается.
 
 Тесты живут в отдельной стадии образа (`target: test`): в рабочий образ не попадают ни `tests/`, ни pytest/ruff. Отчёт прогона сохраняется в `backend/eval/reports/latest.md` (папка примонтирована из контейнера).
 
