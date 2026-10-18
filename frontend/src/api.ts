@@ -30,13 +30,22 @@ export function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function parseError(resp: Response): Promise<ApiError> {
-  let message = `Ошибка ${resp.status}`
+// Если ответ пришёл не от бэкенда (страница nginx, сервер перезапускается), показываем понятный текст.
+const STATUS_TEXT: Record<number, string> = {
+  413: 'Файл слишком большой: можно загрузить не больше 5 МБ.',
+  429: 'Слишком много запросов. Подождите немного и повторите.',
+  502: 'Сервер временно недоступен (перезапускается). Повторите через минуту.',
+  503: 'Сервер временно недоступен. Повторите через минуту.',
+  504: 'Сервер не ответил вовремя. Повторите через минуту.',
+}
+
+export async function parseError(resp: Response): Promise<ApiError> {
+  let message = STATUS_TEXT[resp.status] ?? `Не удалось выполнить запрос (код ${resp.status}).`
   try {
     const body = await resp.json()
     if (typeof body.detail === 'string') message = body.detail
   } catch {
-    /* не JSON */
+    /* не JSON — остаётся текст по коду ответа */
   }
   if (resp.status === 401) {
     setToken(null)
@@ -45,9 +54,19 @@ async function parseError(resp: Response): Promise<ApiError> {
   return new ApiError(resp.status, message)
 }
 
+/** fetch с понятной ошибкой, если сети нет совсем (вместо «Failed to fetch»). */
+export async function request(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init)
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw e
+    throw new ApiError(0, 'Нет связи с сервером. Проверьте подключение и повторите.')
+  }
+}
+
 export async function api<T>(path: string, options: RequestInit & { json?: unknown } = {}): Promise<T> {
   const { json, headers, ...rest } = options
-  const resp = await fetch(path, {
+  const resp = await request(path, {
     ...rest,
     headers: {
       ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -61,7 +80,7 @@ export async function api<T>(path: string, options: RequestInit & { json?: unkno
 }
 
 export async function fetchBlobUrl(path: string): Promise<string> {
-  const resp = await fetch(path, { headers: authHeaders() })
+  const resp = await request(path, { headers: authHeaders() })
   if (!resp.ok) throw await parseError(resp)
   return URL.createObjectURL(await resp.blob())
 }
@@ -84,7 +103,7 @@ export async function postStream(
   onEvent: (event: SseEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const resp = await fetch(path, {
+  const resp = await request(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),

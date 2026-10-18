@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -24,6 +24,8 @@ from app.services.common import Actor, q_money, q_qty, today
 from app.services.names import supplier_core
 from app.services.permissions import Perm, require
 from app.services.rates import RatesClient, get_rate
+
+MAX_RECEIPT_AGE_DAYS = 5 * 366
 
 
 @dataclass
@@ -86,6 +88,8 @@ async def create_receipt(
         raise DomainError("В поступлении нет ни одной строки.")
     if received_date > today():
         raise DomainError("Дата поступления не может быть в будущем.")
+    if received_date < today() - timedelta(days=MAX_RECEIPT_AGE_DAYS):
+        raise DomainError("Дата поступления слишком давняя: оформить можно поставку не старше 5 лет.")
 
     supplier = await get_or_create_supplier(session, supplier_name)
     receipt = Receipt(supplier_id=supplier.id, received_date=received_date, created_by_id=actor.user_id)

@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
-from app.web import MAX_ID
+from app.web import MAX_ID, BizDate
 
 DbId = Annotated[int, Field(ge=1, le=MAX_ID)]
 # Пределы ниже — с запасом под колонки numeric(18, 4/6): иначе себестоимость в рублях переполнится.
@@ -90,7 +90,7 @@ class ReceiptLineIn(BaseModel):
 
 class ReceiptIn(BaseModel):
     supplier: str = Field(min_length=1, max_length=200)
-    received_date: date
+    received_date: BizDate
     lines: list[ReceiptLineIn] = Field(min_length=1, max_length=100)
 
 
@@ -177,7 +177,7 @@ class BatchCard(BaseModel):
 class OrderIn(BaseModel):
     recipe_id: DbId
     qty: int = Field(gt=0, le=100_000)
-    planned_date: date
+    planned_date: BizDate
     workshop: int = Field(default=1, ge=1, le=3)
     comment: str | None = Field(default=None, max_length=1000)
     plan_now: bool = True

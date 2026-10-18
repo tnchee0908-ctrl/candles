@@ -1,5 +1,4 @@
 import logging
-from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
@@ -13,7 +12,7 @@ from app.schemas import CompleteIn, OrderCard, OrderIn, OrderRow, PlanPreviewRow
 from app.services import audit, orders, reports
 from app.services.common import Actor, to_jsonable
 from app.services.permissions import Perm, has_perm, require
-from app.web import Id, IdQuery
+from app.web import DateQuery, Id, IdQuery, OptionalDateQuery
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 log = logging.getLogger(__name__)
@@ -76,8 +75,8 @@ async def build_card(session, order_id: int, actor: Actor) -> OrderCard:
 async def list_orders(
     session: SessionDep,
     actor: ActorDep,
-    date_from: date | None = None,
-    date_to: date | None = None,
+    date_from: OptionalDateQuery = None,
+    date_to: OptionalDateQuery = None,
     status: list[Literal["draft", "planned", "in_progress", "completed", "cancelled"]] | None = Query(None),
 ):
     rows = await orders.list_orders(session, actor, date_from=date_from, date_to=date_to, statuses=status)
@@ -92,7 +91,7 @@ async def preview(
 
 
 @router.get("/shortages")
-async def shortages(session: SessionDep, actor: ActorDep, date_from: date, date_to: date):
+async def shortages(session: SessionDep, actor: ActorDep, date_from: DateQuery, date_to: DateQuery):
     # Количества — строками, как во всём API: float потерял бы точность.
     return to_jsonable(await reports.shortages_for_period(session, actor, date_from, date_to))
 

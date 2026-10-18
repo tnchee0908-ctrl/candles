@@ -111,6 +111,9 @@ class OpenAIProvider:
                     raise LLMRegionError(f"HTTP {exc.status_code}: region not supported") from exc
                 raise LLMAuthError(f"HTTP {exc.status_code}") from exc
             raise LLMRequestError(f"HTTP {exc.status_code}: {exc.message[:300]}") from exc
+        except openai.APIError as exc:
+            # Ошибка, пришедшая внутри уже открытого потока (без HTTP-статуса): сбой на стороне сервиса.
+            raise LLMRetryableError(f"stream API error: {type(exc).__name__}") from exc
 
 
 MODEL_ERROR_MARKERS = (

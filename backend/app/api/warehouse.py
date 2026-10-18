@@ -1,4 +1,3 @@
-from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Query
@@ -29,7 +28,7 @@ from app.schemas import (
 from app.services import audit, batches, catalog, marking, reports
 from app.services.batches import BatchFilters, ReceiptLine
 from app.services.permissions import Perm, require
-from app.web import Id, OptionalIdQuery
+from app.web import Id, OptionalDateQuery, OptionalIdQuery
 
 router = APIRouter(prefix="/api", tags=["warehouse"])
 
@@ -109,8 +108,8 @@ async def list_batches(
     supplier: str | None = None,
     status: Literal["on_check", "accepted", "rejected"] | None = None,
     currency: Literal["RUB", "USD", "EUR"] | None = None,
-    date_from: date | None = None,
-    date_to: date | None = None,
+    date_from: OptionalDateQuery = None,
+    date_to: OptionalDateQuery = None,
     only_free: bool = False,
     sort: str = "received_date",
     direction: Literal["asc", "desc"] = "desc",

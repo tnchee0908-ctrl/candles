@@ -28,6 +28,8 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Журнал PostgreSQL без DETAIL и текста запроса: там бывают значения строк (ФИО, поставщики).
+    command: ["postgres", "-c", "log_error_verbosity=terse", "-c", "log_min_error_statement=panic"]
     environment:
       POSTGRES_USER: candles
       POSTGRES_PASSWORD: candles

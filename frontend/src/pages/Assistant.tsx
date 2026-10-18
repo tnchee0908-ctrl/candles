@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import { useNavigate, useParams } from 'react-router-dom'
 import remarkGfm from 'remark-gfm'
-import { api, authHeaders, downloadFile, fetchBlobUrl, postStream, type SseEvent } from '@/api'
+import { api, authHeaders, downloadFile, fetchBlobUrl, parseError, postStream, request, type SseEvent } from '@/api'
 import {
   AssistantFile,
   AssistantMessage,
@@ -23,6 +23,8 @@ import { Banner } from '@/components/ui'
 import { formatDateTime } from '@/lib/format'
 import { levelByQty } from '@/lib/reserve'
 import type { ChatAction, ChatFile, ChatMessage, Conversation } from '@/types'
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 const TOOL_TITLES: Record<string, string> = {
   get_material_stock: 'остатки',
@@ -259,16 +261,17 @@ export default function AssistantPage() {
   }
 
   async function uploadFile(id: number, file: File): Promise<ChatFile> {
+    // Размер проверяем ещё в браузере: не гоняем по сети файл, который сервер всё равно не примет.
+    if (file.size > MAX_UPLOAD_BYTES) throw new Error(`Файл «${file.name}» больше 5 МБ.`)
     const form = new FormData()
     form.append('file', file)
-    const resp = await fetch(`/api/chat/conversations/${id}/files`, {
+    const resp = await request(`/api/chat/conversations/${id}/files`, {
       method: 'POST',
       headers: authHeaders(),
       body: form,
     })
-    const body = await resp.json()
-    if (!resp.ok) throw new Error(body.detail ?? 'Не удалось загрузить файл')
-    return body as ChatFile
+    if (!resp.ok) throw await parseError(resp)
+    return (await resp.json()) as ChatFile
   }
 
   async function send(question: string, files: File[] = []) {
@@ -292,11 +295,15 @@ export default function AssistantPage() {
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
+    let finished = false
     try {
       await postStream(
         `/api/chat/conversations/${id}/messages`,
         { text: q, file_ids: uploaded.map((f) => f.id) },
-        onEvent,
+        (e) => {
+          if (e.type === 'done') finished = true
+          onEvent(e)
+        },
         controller.signal,
       )
     } catch (e) {
@@ -309,8 +316,9 @@ export default function AssistantPage() {
       setStreaming(false)
       abortRef.current = null
       loadConversations()
-      // После «Остановить» сервер сохраняет часть ответа с пометкой — подтягиваем итог.
-      if (controller.signal.aborted) setTimeout(() => loadMessages(id), 600)
+      // Поток закончился без «done» (остановка, обрыв связи): сервер сохранил ответ с пометкой —
+      // подтягиваем итог, иначе сообщение так и висело бы в состоянии «Думаю…».
+      if (!finished) setTimeout(() => loadMessages(id), controller.signal.aborted ? 600 : 1500)
     }
   }
 

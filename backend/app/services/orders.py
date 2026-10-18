@@ -16,7 +16,7 @@ PostgreSQL, и второй видит уже уменьшенный свобо�
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -44,6 +44,7 @@ from app.services.common import Actor, fmt_num, q_qty, today
 from app.services.permissions import Perm, require
 
 MAX_ORDER_QTY = 100_000
+MAX_PLAN_AHEAD_DAYS = 730
 
 
 @dataclass
@@ -154,6 +155,10 @@ async def create_order(
         raise DomainError("Цех должен быть 1, 2 или 3.")
     if planned_date < today():
         raise DomainError("Дата задания не может быть в прошлом.")
+    if planned_date > today() + timedelta(days=MAX_PLAN_AHEAD_DAYS):
+        raise DomainError(
+            "Плановая дата слишком далеко: задание можно запланировать не больше чем на 2 года вперёд."
+        )
     recipe = await session.scalar(
         select(Recipe)
         .where(Recipe.id == recipe_id)

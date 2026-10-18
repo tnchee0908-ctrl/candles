@@ -1,6 +1,7 @@
 """Граница API: некорректный ввод → понятный текст по-русски, никогда не 500."""
 
 import re
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -161,3 +162,46 @@ async def test_login_bruteforce_is_limited(client, world):
         "/api/auth/login", json={"username": "boss", "password": "x"}, headers={"X-Forwarded-For": "10.0.0.7"}
     )
     assert ok.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "body_patch,expected",
+    [
+        ({"received_date": "0001-01-01"}, "дата поступления: должно быть не меньше 01.01.2000"),
+        ({"received_date": "9999-12-31"}, "дата поступления: должно быть не больше 31.12.2100"),
+    ],
+)
+async def test_absurd_receipt_dates_are_rejected(client, body_patch, expected):
+    body = {
+        "supplier": "ООО Восковой двор",
+        "received_date": today().isoformat(),
+        "lines": [{"material_code": "WAX", "qty": "1", "price": "10", "currency": "RUB"}],
+    } | body_patch
+    assert expected in assert_human(await client.post("/api/receipts", json=body), 422)
+
+
+async def test_far_dates_are_business_errors(client, world, session):
+    from datetime import timedelta
+
+    from app.services import batches
+    from app.services.batches import ReceiptLine
+
+    resp = await client.post(
+        "/api/orders",
+        json={
+            "recipe_id": world.recipe.id,
+            "qty": 1,
+            "planned_date": (today() + timedelta(days=800)).isoformat(),
+        },
+    )
+    assert "не больше чем на 2 года" in assert_human(resp, 400)
+    with pytest.raises(Exception, match="слишком давняя"):
+        await batches.create_receipt(
+            session,
+            world.actors["sklad"],
+            supplier_name="ООО Восковой двор",
+            received_date=today() - timedelta(days=6 * 366),
+            lines=[ReceiptLine("WAX", Decimal("1"), Decimal("1"), "RUB")],
+        )
+    for q in ("date_from=0001-01-01&date_to=2026-01-01", "date_from=2026-01-01&date_to=9999-12-31"):
+        assert_human(await client.get(f"/api/orders/shortages?{q}"), 422)

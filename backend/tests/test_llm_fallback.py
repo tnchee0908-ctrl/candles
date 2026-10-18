@@ -204,3 +204,31 @@ async def test_silent_stream_hits_idle_timeout():
     req = LLMRequest(instructions="i", input=[], timeout=10, idle_timeout=0.2)
     backup = ScriptedProvider("backup", [say("успел")])
     assert await collect(FallbackLLM([Silent("primary", []), backup]), req=req) == "успел"
+
+
+async def test_api_error_inside_stream_switches_to_fallback():
+    """openai.APIError без HTTP-статуса из уже открытого потока — сбой сервиса: до первого токена → запасная."""
+    import httpx
+    import openai
+
+    from app.assistant.llm.openai_provider import OpenAIProvider
+
+    async def broken_stream():
+        raise openai.APIError("stream died", request=httpx.Request("POST", "https://x"), body=None)
+        yield  # noqa: B901
+
+    class Responses:
+        async def create(self, **kwargs):
+            return broken_stream()
+
+    class Client:
+        responses = Responses()
+
+    backup = ScriptedProvider("backup", [say("запасная")])
+    assert await collect(FallbackLLM([OpenAIProvider(Client(), "primary"), backup])) == "запасная"  # type: ignore[arg-type]
+
+
+def test_sql_errors_do_not_carry_parameter_values():
+    from app.db import engine
+
+    assert engine.sync_engine.hide_parameters is True

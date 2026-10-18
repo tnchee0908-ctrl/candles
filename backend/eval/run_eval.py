@@ -40,7 +40,7 @@ from app.assistant.sandbox import OpenAISandbox
 from app.assistant.tools import _avg_unit_cost
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Batch, Conversation, Material, Message, ProductionOrder, User, UserFact
+from app.models import AuditLog, Batch, ChatFile, Conversation, Material, Message, ProductionOrder, User, UserFact
 from app.services import reports
 from app.services.common import Actor, q_money, today
 
@@ -308,6 +308,19 @@ async def run_one(spec: dict, truth: dict, mode: str = "primary") -> Result:
         conv = Conversation(user_id=user.id, title=f"[eval] {spec['id']}")
         session.add(conv)
         await session.commit()
+        file_ids = []
+        if spec.get("upload"):  # вопрос про загруженный файл: кладём его в диалог, как кнопка «Прикрепить»
+            upload = ChatFile(
+                conversation_id=conv.id,
+                user_id=user.id,
+                direction="upload",
+                filename=spec["upload"]["name"],
+                mime="text/csv",
+                data=spec["upload"]["content"].encode("utf-8"),
+            )
+            session.add(upload)
+            await session.commit()
+            file_ids = [upload.id]
         before = await db_snapshot(session)
 
     started = time.monotonic()
@@ -317,7 +330,12 @@ async def run_one(spec: dict, truth: dict, mode: str = "primary") -> Result:
 
     try:
         msg_id = await chat.run_turn(
-            user=user, conversation_id=conv.id, text=question, file_ids=[], emit=emit, stop=asyncio.Event()
+            user=user,
+            conversation_id=conv.id,
+            text=question,
+            file_ids=file_ids,
+            emit=emit,
+            stop=asyncio.Event(),
         )
     finally:
         tools.execute = original_execute
@@ -455,6 +473,10 @@ async def main() -> int:
         async with SessionLocal() as session:
             await session.execute(delete(Conversation).where(Conversation.title.like("[eval]%")))
             await session.execute(delete(UserFact).where(UserFact.created_at >= started))
+            # Прогон — тест, а не работа пользователей: его следы в журнале памяти тоже убираем.
+            await session.execute(
+                delete(AuditLog).where(AuditLog.entity_type == "memory", AuditLog.at >= started)
+            )
             await session.commit()
     return 0 if all(r.machine_ok for r in results) else 1
 

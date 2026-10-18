@@ -9,6 +9,7 @@
 import json
 import logging
 import time
+from datetime import date
 from http import HTTPStatus
 from typing import Annotated, Any
 
@@ -17,6 +18,7 @@ import asyncpg.exceptions._base
 from fastapi import Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import Field
 from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -27,6 +29,12 @@ MAX_ID = 2_147_483_647
 Id = Annotated[int, Path(ge=1, le=MAX_ID)]
 IdQuery = Annotated[int, Query(ge=1, le=MAX_ID)]
 OptionalIdQuery = Annotated[int | None, Query(ge=1, le=MAX_ID)]
+# Даты учёта: всё, что раньше 2000 или позже 2100, — опечатка (например, 0001-01-01 или 9999-12-31).
+MIN_DATE = date(2000, 1, 1)
+MAX_DATE = date(2100, 12, 31)
+BizDate = Annotated[date, Field(ge=MIN_DATE, le=MAX_DATE)]
+DateQuery = Annotated[date, Query(ge=MIN_DATE, le=MAX_DATE)]
+OptionalDateQuery = Annotated[date | None, Query(ge=MIN_DATE, le=MAX_DATE)]
 
 FIELD_NAMES = {
     "qty": "количество",
@@ -73,6 +81,16 @@ FIELD_NAMES = {
 }
 
 
+def _human(value: Any) -> str:
+    """Граница для сообщения: даты — по-русски (01.01.2000), остальное как есть."""
+    if isinstance(value, str):
+        try:
+            value = date.fromisoformat(value)
+        except ValueError:
+            return value
+    return value.strftime("%d.%m.%Y") if isinstance(value, date) else str(value)
+
+
 def _msg(err: dict[str, Any]) -> str:
     t, ctx = err.get("type", ""), err.get("ctx") or {}
     if t == "missing":
@@ -80,11 +98,11 @@ def _msg(err: dict[str, Any]) -> str:
     if t == "greater_than":
         return f"должно быть больше {ctx.get('gt')}"
     if t == "greater_than_equal":
-        return f"должно быть не меньше {ctx.get('ge')}"
+        return f"должно быть не меньше {_human(ctx.get('ge'))}"
     if t == "less_than":
         return f"должно быть меньше {ctx.get('lt')}"
     if t == "less_than_equal":
-        return f"должно быть не больше {ctx.get('le')}"
+        return f"должно быть не больше {_human(ctx.get('le'))}"
     if t == "string_too_short":
         n = ctx.get("min_length", 1)
         return "не может быть пустым" if n == 1 else f"не короче {n} символов"

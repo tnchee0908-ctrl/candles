@@ -43,6 +43,7 @@ from app.services.batches import BatchFilters
 from app.services.common import Actor, fmt_num, q_money, today
 from app.services.permissions import Perm, has_perm, require
 from app.services.rates import get_rate
+from app.web import BizDate
 
 log = logging.getLogger(__name__)
 
@@ -126,8 +127,8 @@ async def get_material_stock(ctx: ToolContext, args: StockArgs) -> dict[str, Any
 
 
 class PeriodArgs(Args):
-    date_from: date
-    date_to: date
+    date_from: BizDate
+    date_to: BizDate
     workshop: int | None = Field(default=None, ge=1, le=3)
 
 
@@ -202,8 +203,8 @@ OrderStatusLit = Literal["draft", "planned", "in_progress", "completed", "cancel
 
 
 class ListOrdersArgs(Args):
-    date_from: date | None = Field(default=None)
-    date_to: date | None = Field(default=None)
+    date_from: BizDate | None = Field(default=None)
+    date_to: BizDate | None = Field(default=None)
     statuses: list[OrderStatusLit] | None = Field(default=None, max_length=5)
     workshop: int | None = Field(default=None, ge=1, le=3)
 
@@ -266,8 +267,8 @@ class FindBatchesArgs(Args):
     material: str | None = Field(default=None, max_length=100)
     supplier: str | None = Field(default=None, max_length=100)
     status: Literal["on_check", "accepted", "rejected"] | None = None
-    date_from: date | None = None
-    date_to: date | None = None
+    date_from: BizDate | None = None
+    date_to: BizDate | None = None
     limit: int = Field(default=20, ge=1, le=50)
 
 
@@ -306,7 +307,7 @@ async def find_batches(ctx: ToolContext, args: FindBatchesArgs) -> dict[str, Any
 
 class RateArgs(Args):
     currency: Literal["USD", "EUR"]
-    on_date: date | None = Field(default=None)
+    on_date: BizDate | None = Field(default=None)
     amounts_rub: list[Decimal] = Field(
         default_factory=list,
         max_length=50,
@@ -336,7 +337,7 @@ async def get_currency_rate(ctx: ToolContext, args: RateArgs) -> dict[str, Any]:
 class ProposeOrderArgs(Args):
     recipe: str = Field(max_length=100)
     qty: int = Field(ge=1, le=100_000)
-    planned_date: date
+    planned_date: BizDate
     workshop: int = Field(default=1, ge=1, le=3)
     comment: str | None = Field(default=None, max_length=300)
 
@@ -348,6 +349,8 @@ async def propose_production_order(ctx: ToolContext, args: ProposeOrderArgs) -> 
     require(ctx.actor, Perm.MANAGE_ORDERS)
     if args.planned_date < today():
         raise DomainError("Дата задания не может быть в прошлом.")
+    if args.planned_date > today() + timedelta(days=orders.MAX_PLAN_AHEAD_DAYS):
+        raise DomainError("Плановая дата слишком далеко: не больше чем на 2 года вперёд.")
     recipe = await catalog.find_recipe(ctx.session, ctx.actor, args.recipe)
     preview_rows = await orders.estimate_plan(ctx.session, ctx.actor, recipe_id=recipe.id, qty=args.qty)
     preview = {
@@ -414,8 +417,8 @@ EXPORT_MAX_ROWS = 5000
 
 class ExportArgs(Args):
     dataset: Dataset
-    date_from: date | None = Field(default=None)
-    date_to: date | None = Field(default=None)
+    date_from: BizDate | None = Field(default=None)
+    date_to: BizDate | None = Field(default=None)
     material: str | None = Field(
         default=None,
         max_length=100,
