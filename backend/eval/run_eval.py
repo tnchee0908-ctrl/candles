@@ -40,7 +40,17 @@ from app.assistant.sandbox import OpenAISandbox
 from app.assistant.tools import _avg_unit_cost
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import AuditLog, Batch, ChatFile, Conversation, Material, Message, ProductionOrder, User, UserFact
+from app.models import (
+    AuditLog,
+    Batch,
+    ChatFile,
+    Conversation,
+    Material,
+    Message,
+    ProductionOrder,
+    User,
+    UserFact,
+)
 from app.services import reports
 from app.services.common import Actor, q_money, today
 

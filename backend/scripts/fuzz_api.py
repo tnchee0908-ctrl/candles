@@ -189,6 +189,8 @@ async def main() -> int:
                         if body is not None or method in ("post", "put", "patch"):
                             kwargs["content"] = json.dumps(body, ensure_ascii=False)
                             kwargs["headers"] = headers | {"content-type": "application/json"}
+                        if isinstance(body, str) and body == "строка" and method in ("post", "put", "patch"):
+                            kwargs["content"] = "тело не в UTF-8".encode("cp1251")  # нечитаемое тело
                         try:
                             resp = await client.request(method.upper(), url, **kwargs)
                         except httpx.HTTPError as exc:

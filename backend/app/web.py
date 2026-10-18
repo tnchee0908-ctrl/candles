@@ -8,9 +8,9 @@
 
 import json
 import logging
+import re
 import time
 from datetime import date
-from http import HTTPStatus
 from typing import Annotated, Any
 
 import asyncpg.exceptions
@@ -172,9 +172,13 @@ HTTP_MESSAGES = {
 
 async def http_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     detail = exc.detail
-    # Стандартные английские фразы фреймворка («Not Found», «Method Not Allowed») — заменяем.
-    if not isinstance(detail, str) or detail == HTTPStatus(exc.status_code).phrase:
-        detail = HTTP_MESSAGES.get(exc.status_code, "Запрос не выполнен.")
+    # Тексты самого фреймворка английские («Not Found», «There was an error parsing the body») —
+    # заменяем любой текст без кириллицы; наши сообщения всегда по-русски.
+    if not isinstance(detail, str) or not re.search(r"[А-Яа-яЁё]", detail):
+        if exc.status_code == 400 and isinstance(detail, str) and "parsing the body" in detail:
+            detail = "Не удалось прочитать тело запроса: нужен JSON в кодировке UTF-8."
+        else:
+            detail = HTTP_MESSAGES.get(exc.status_code, "Запрос не выполнен.")
     return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=exc.headers)
 
 

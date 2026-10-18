@@ -48,8 +48,8 @@ docker compose up --build
 ### Тесты, линтеры, эталонный прогон
 
 ```bash
-docker compose run --rm tests                         # ruff + тесты на настоящем PostgreSQL, без сети
-docker compose run --rm tests sh scripts/mutants.sh   # сила тестов: 14 реалистичных ошибок, все должны быть пойманы
+docker compose run --rm --build tests                 # ruff + тесты на настоящем PostgreSQL, без сети
+docker compose run --rm --build tests sh scripts/mutants.sh   # сила тестов: 14 реалистичных ошибок, все должны быть пойманы
 docker compose run --rm tests python scripts/fuzz_api.py          # фаззинг всех эндпоинтов из OpenAPI (стенд поднят)
 docker compose run --rm tests python scripts/live_assistant.py file_injection memory_style chart stop  # ассистент вживую
 cd frontend && npm install && npm run lint && npm run build

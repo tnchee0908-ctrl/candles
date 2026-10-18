@@ -205,3 +205,12 @@ async def test_far_dates_are_business_errors(client, world, session):
         )
     for q in ("date_from=0001-01-01&date_to=2026-01-01", "date_from=2026-01-01&date_to=9999-12-31"):
         assert_human(await client.get(f"/api/orders/shortages?{q}"), 422)
+
+
+async def test_unreadable_body_is_russian(client):
+    """Тело не в UTF-8 (так шлёт, например, консоль Windows) — понятный текст, а не «error parsing the body»."""
+    resp = await client.post(
+        "/api/chat/memory", content="привет".encode("cp1251"), headers={"content-type": "application/json"}
+    )
+    assert resp.status_code in (400, 422)
+    assert_human(resp, resp.status_code)
