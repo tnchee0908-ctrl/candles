@@ -3,7 +3,7 @@
 # Отличия от локального запуска:
 #  * наружу открыт только Caddy (80/443) с автоматическим HTTPS для DOMAIN;
 #  * бэкенд, база, Redis и моки доступны только внутри сети Docker;
-#  * JWT_SECRET и DOMAIN обязательны, у ассистента лимиты сообщений;
+#  * JWT_SECRET и DOMAIN обязательны;
 #  * контейнеры перезапускаются сами после сбоя или перезагрузки сервера.
 
 x-restart: &restart
@@ -25,8 +25,8 @@ services:
     ports: !reset []
     environment:
       JWT_SECRET: ${JWT_SECRET:?задайте JWT_SECRET в .env}
-      CHAT_USER_HOURLY_LIMIT: ${CHAT_USER_HOURLY_LIMIT:-30}
-      CHAT_DAILY_LIMIT: ${CHAT_DAILY_LIMIT:-300}
+      CHAT_USER_HOURLY_LIMIT: ${CHAT_USER_HOURLY_LIMIT:-0}
+      CHAT_DAILY_LIMIT: ${CHAT_DAILY_LIMIT:-0}
   worker:
     <<: *restart
   frontend:
