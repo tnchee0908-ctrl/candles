@@ -103,4 +103,8 @@ jobs:
             candles-tests sh scripts/mutants.sh | tee mutants.txt
           # Скрипт сам не падает, а печатает «ВЫЖИЛ» для мутанта, которого тесты не поймали.
           if grep -q "ВЫЖИЛ" mutants.txt; then echo "::error::Есть выжившие мутанты"; exit 1; fi
-          grep -q "убит" mutants.txt
+          # Каждый мутант должен быть убит упавшим тестом (FAILED), а не ошибкой окружения (нет базы и т.п.).
+          total=$(grep -c '^run "' backend/scripts/mutants.sh)
+          killed=$(grep -c "^убит .*FAILED" mutants.txt || true)
+          echo "Убито тестами: $killed из $total"
+          if [ "$killed" -ne "$total" ]; then echo "::error::Убито тестами $killed из $total"; exit 1; fi

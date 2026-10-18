@@ -1,5 +1,5 @@
 # runtime — рабочий образ (API, воркер, моки): только зависимости для работы и код приложения.
-# test    — runtime + pytest/ruff + tests/: используется только сервисом tests (docker compose run --rm tests).
+# test    — runtime + pytest/ruff + tests/ + scripts/: используется только сервисом tests (docker compose run --rm tests).
 
 FROM python:3.12-slim AS runtime
 
@@ -29,4 +29,5 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
     > /tmp/requirements-dev.txt \
  && pip install --no-cache-dir -r /tmp/requirements-dev.txt
 COPY tests ./tests
+COPY scripts ./scripts
 CMD ["sh", "-c", "ruff check . && ruff format --check . && pytest -q"]
