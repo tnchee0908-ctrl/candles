@@ -11,6 +11,7 @@ from app.models import MarkingAttempt, MarkingReport, ProductionOrder
 from app.schemas import CompleteIn, OrderCard, OrderIn, OrderRow, PlanPreviewRow, ReservationOut
 from app.services import audit, orders, reports
 from app.services.permissions import Perm, require
+from app.web import Id, IdQuery
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 log = logging.getLogger(__name__)
@@ -79,7 +80,9 @@ async def list_orders(
 
 
 @router.get("/preview", response_model=list[PlanPreviewRow])
-async def preview(session: SessionDep, actor: ActorDep, recipe_id: int, qty: int = Query(gt=0, le=100_000)):
+async def preview(
+    session: SessionDep, actor: ActorDep, recipe_id: IdQuery, qty: int = Query(gt=0, le=100_000)
+):
     return await orders.estimate_plan(session, actor, recipe_id=recipe_id, qty=qty)
 
 
@@ -108,37 +111,37 @@ async def create(body: OrderIn, session: SessionDep, actor: ActorDep):
 
 
 @router.get("/{order_id}", response_model=OrderCard)
-async def card(order_id: int, session: SessionDep, actor: ActorDep):
+async def card(order_id: Id, session: SessionDep, actor: ActorDep):
     require(actor, Perm.VIEW_STOCK)
     return await build_card(session, order_id)
 
 
 @router.get("/{order_id}/cost")
-async def cost(order_id: int, session: SessionDep, actor: ActorDep):
+async def cost(order_id: Id, session: SessionDep, actor: ActorDep):
     number = await session.scalar(select(ProductionOrder.number).where(ProductionOrder.id == order_id))
     return await reports.order_cost(session, actor, number or "")
 
 
 @router.post("/{order_id}/plan", response_model=OrderCard)
-async def plan(order_id: int, session: SessionDep, actor: ActorDep):
+async def plan(order_id: Id, session: SessionDep, actor: ActorDep):
     await orders.plan_order(session, actor, order_id)
     return await build_card(session, order_id)
 
 
 @router.post("/{order_id}/start", response_model=OrderCard)
-async def start(order_id: int, session: SessionDep, actor: ActorDep):
+async def start(order_id: Id, session: SessionDep, actor: ActorDep):
     await orders.start_order(session, actor, order_id)
     return await build_card(session, order_id)
 
 
 @router.post("/{order_id}/cancel", response_model=OrderCard)
-async def cancel(order_id: int, session: SessionDep, actor: ActorDep):
+async def cancel(order_id: Id, session: SessionDep, actor: ActorDep):
     await orders.cancel_order(session, actor, order_id)
     return await build_card(session, order_id)
 
 
 @router.post("/{order_id}/complete", response_model=OrderCard)
-async def complete(order_id: int, body: CompleteIn, request: Request, session: SessionDep, actor: ActorDep):
+async def complete(order_id: Id, body: CompleteIn, request: Request, session: SessionDep, actor: ActorDep):
     await orders.complete_order(session, actor, order_id, body.actual)
     report_id = await session.scalar(select(MarkingReport.id).where(MarkingReport.order_id == order_id))
     # Не ждём сервис маркировки: ставим задачу в очередь и сразу отвечаем.

@@ -8,12 +8,20 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, update
+from sqlalchemy.exc import DBAPIError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import auth, chat, orders, warehouse
 from app.config import get_settings
 from app.db import SessionLocal
 from app.errors import DomainError
 from app.models import Message
+from app.web import (
+    RejectNulMiddleware,
+    db_error_handler,
+    http_error_handler,
+    validation_error_handler,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
@@ -56,36 +64,15 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"]
 )
+app.add_middleware(RejectNulMiddleware)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(StarletteHTTPException, http_error_handler)
+app.add_exception_handler(DBAPIError, db_error_handler)
 
 
 @app.exception_handler(DomainError)
 async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     return JSONResponse({"detail": exc.message}, status_code=exc.status_code)
-
-
-FIELD_NAMES = {
-    "qty": "количество",
-    "price": "цена",
-    "currency": "валюта",
-    "received_date": "дата поступления",
-    "planned_date": "плановая дата",
-    "supplier": "поставщик",
-    "material_code": "код материала",
-    "recipe_id": "рецепт",
-    "workshop": "цех",
-    "text": "текст",
-    "username": "логин",
-    "password": "пароль",
-}
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    parts = []
-    for err in exc.errors()[:5]:
-        field = next((str(p) for p in reversed(err["loc"]) if isinstance(p, str)), "")
-        parts.append(f"{FIELD_NAMES.get(field, field)}: {err['msg']}")
-    return JSONResponse({"detail": "Проверьте данные — " + "; ".join(parts)}, status_code=422)
 
 
 @app.exception_handler(Exception)

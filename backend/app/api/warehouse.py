@@ -29,6 +29,7 @@ from app.schemas import (
 from app.services import audit, batches, catalog, marking, reports
 from app.services.batches import BatchFilters, ReceiptLine
 from app.services.permissions import Perm, require
+from app.web import Id, OptionalIdQuery
 
 router = APIRouter(prefix="/api", tags=["warehouse"])
 
@@ -113,7 +114,7 @@ async def list_batches(
     only_free: bool = False,
     sort: str = "received_date",
     direction: Literal["asc", "desc"] = "desc",
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=100_000),
     page_size: int = Query(20, ge=1, le=200),
 ):
     filters = BatchFilters(number, material, supplier, status, currency, date_from, date_to, only_free)
@@ -124,7 +125,7 @@ async def list_batches(
 
 
 @router.get("/batches/{batch_id}", response_model=BatchCard)
-async def batch_card(batch_id: int, session: SessionDep, actor: ActorDep):
+async def batch_card(batch_id: Id, session: SessionDep, actor: ActorDep):
     batch, reservations, consumptions, history = await batches.get_batch_card(
         session, actor, batch_id=batch_id
     )
@@ -141,7 +142,7 @@ async def batch_card(batch_id: int, session: SessionDep, actor: ActorDep):
 
 
 @router.post("/batches/{batch_id}/status")
-async def set_batch_status(batch_id: int, body: BatchStatusIn, session: SessionDep, actor: ActorDep):
+async def set_batch_status(batch_id: Id, body: BatchStatusIn, session: SessionDep, actor: ActorDep):
     batch = await batches.set_status(session, actor, batch_id, body.status)
     return {"id": batch.id, "status": batch.status}
 
@@ -151,9 +152,9 @@ async def audit_log(
     session: SessionDep,
     actor: ActorDep,
     entity_type: str | None = None,
-    entity_id: int | None = None,
+    entity_id: OptionalIdQuery = None,
     via_assistant: bool | None = None,
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=100_000),
     page_size: int = Query(50, ge=1, le=200),
 ):
     items, total = await audit.list_entries(
@@ -192,7 +193,7 @@ async def marking_reports(session: SessionDep, actor: ActorDep):
 
 
 @router.post("/marking/{report_id}/retry", response_model=MarkingOut)
-async def retry_marking(report_id: int, session: SessionDep, actor: ActorDep):
+async def retry_marking(report_id: Id, session: SessionDep, actor: ActorDep):
     require(actor, Perm.MANAGE_ORDERS)
     report = await marking.retry_report(session, report_id)
     if report is None:

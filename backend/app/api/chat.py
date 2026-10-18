@@ -19,6 +19,8 @@ from app.config import get_settings
 from app.deps import CurrentUser, SessionDep
 from app.errors import DomainError, NotFound
 from app.models import ChatFile, Conversation, Message
+from app.schemas import DbId
+from app.web import Id
 
 router = APIRouter(prefix="/api/chat", tags=["assistant"])
 log = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ class ConversationOut(BaseModel):
 
 class SendIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
-    file_ids: list[int] = Field(default_factory=list, max_length=5)
+    file_ids: list[DbId] = Field(default_factory=list, max_length=5)
 
 
 class FactIn(BaseModel):
@@ -76,7 +78,7 @@ async def create_conversation(session: SessionDep, user: CurrentUser):
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: int, session: SessionDep, user: CurrentUser):
+async def delete_conversation(conversation_id: Id, session: SessionDep, user: CurrentUser):
     conv = await _own_conversation(session, user.id, conversation_id)
     await session.delete(conv)
     await session.commit()
@@ -84,7 +86,7 @@ async def delete_conversation(conversation_id: int, session: SessionDep, user: C
 
 
 @router.get("/conversations/{conversation_id}/messages")
-async def get_messages(conversation_id: int, session: SessionDep, user: CurrentUser) -> list[dict[str, Any]]:
+async def get_messages(conversation_id: Id, session: SessionDep, user: CurrentUser) -> list[dict[str, Any]]:
     await _own_conversation(session, user.id, conversation_id)
     rows = await session.scalars(
         select(Message).where(Message.conversation_id == conversation_id).order_by(Message.id)
@@ -98,7 +100,7 @@ def _sse(event: dict[str, Any]) -> str:
 
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
-    conversation_id: int, body: SendIn, session: SessionDep, user: CurrentUser, chat: ChatDep
+    conversation_id: Id, body: SendIn, session: SessionDep, user: CurrentUser, chat: ChatDep
 ):
     """Отправить вопрос. Ответ — поток Server-Sent Events: start, delta, tool, code, action, file, model, done."""
     await _own_conversation(session, user.id, conversation_id)
@@ -163,7 +165,7 @@ async def send_message(
 
 
 @router.post("/conversations/{conversation_id}/stop")
-async def stop_turn(conversation_id: int, session: SessionDep, user: CurrentUser):
+async def stop_turn(conversation_id: Id, session: SessionDep, user: CurrentUser):
     await _own_conversation(session, user.id, conversation_id)
     event = ACTIVE_TURNS.get(conversation_id)
     if event:
@@ -172,23 +174,23 @@ async def stop_turn(conversation_id: int, session: SessionDep, user: CurrentUser
 
 
 @router.post("/actions/{action_id}/confirm")
-async def confirm(action_id: int, session: SessionDep, user: CurrentUser):
+async def confirm(action_id: Id, session: SessionDep, user: CurrentUser):
     action = await confirm_action(session, user, action_id)
     return {"id": action.id, "status": action.status, "result": action.result}
 
 
 @router.post("/actions/{action_id}/reject")
-async def reject(action_id: int, session: SessionDep, user: CurrentUser):
+async def reject(action_id: Id, session: SessionDep, user: CurrentUser):
     action = await reject_action(session, user, action_id)
     return {"id": action.id, "status": action.status}
 
 
 @router.post("/conversations/{conversation_id}/files")
 async def upload_file(
-    conversation_id: int, session: SessionDep, user: CurrentUser, file: UploadFile = File(...)
+    conversation_id: Id, session: SessionDep, user: CurrentUser, file: UploadFile = File(...)
 ):
     await _own_conversation(session, user.id, conversation_id)
-    name = (file.filename or "file").rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:200]
+    name = (file.filename or "file").replace("\x00", "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:200]
     ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext not in ALLOWED_UPLOADS:
         raise DomainError("Можно загрузить CSV, XLSX, TXT, TSV или JSON.")
@@ -209,7 +211,7 @@ async def upload_file(
 
 
 @router.get("/files/{file_id}")
-async def download_file(file_id: int, session: SessionDep, user: CurrentUser):
+async def download_file(file_id: Id, session: SessionDep, user: CurrentUser):
     f = await session.get(ChatFile, file_id)
     if f is None or f.user_id != user.id:
         raise HTTPException(404, "Файл не найден.")
@@ -237,7 +239,7 @@ async def add_memory(body: FactIn, session: SessionDep, user: CurrentUser):
 
 
 @router.delete("/memory/{fact_id}")
-async def delete_memory(fact_id: int, session: SessionDep, user: CurrentUser):
+async def delete_memory(fact_id: Id, session: SessionDep, user: CurrentUser):
     await memory.delete_fact(session, user.id, fact_id)
     return {"ok": True}
 

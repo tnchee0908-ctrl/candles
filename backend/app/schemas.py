@@ -4,6 +4,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
+from app.web import MAX_ID
+
+DbId = Annotated[int, Field(ge=1, le=MAX_ID)]
+# Пределы ниже — с запасом под колонки numeric(18, 4/6): иначе себестоимость в рублях переполнится.
+MAX_QTY = Decimal("1000000000")
+MAX_PRICE = Decimal("100000000")
+
 # Decimal в JSON отдаём строкой: так не теряется точность (0.1 + 0.2), фронт форматирует сам.
 Dec = Annotated[Decimal, PlainSerializer(lambda v: str(v), return_type=str, when_used="json")]
 
@@ -54,7 +61,7 @@ class StockOut(BaseModel):
 
 class RecipeItemIn(BaseModel):
     material_code: str
-    qty_per_unit: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    qty_per_unit: Decimal = Field(gt=0, le=Decimal("10000"), max_digits=18, decimal_places=4)
 
 
 class RecipeIn(BaseModel):
@@ -75,8 +82,8 @@ class RecipeOut(BaseModel):
 
 class ReceiptLineIn(BaseModel):
     material_code: str = Field(min_length=1)
-    qty: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
-    price: Decimal = Field(ge=0, max_digits=18, decimal_places=2)
+    qty: Decimal = Field(gt=0, le=MAX_QTY, max_digits=18, decimal_places=4)
+    price: Decimal = Field(ge=0, le=MAX_PRICE, max_digits=18, decimal_places=2)
     currency: Literal["RUB", "USD", "EUR"]
     comment: str | None = Field(default=None, max_length=1000)
 
@@ -168,7 +175,7 @@ class BatchCard(BaseModel):
 
 
 class OrderIn(BaseModel):
-    recipe_id: int
+    recipe_id: DbId
     qty: int = Field(gt=0, le=100_000)
     planned_date: date
     workshop: int = Field(default=1, ge=1, le=3)
@@ -181,7 +188,7 @@ ActualQty = Annotated[Decimal, Field(ge=0, le=Decimal("1000000"), max_digits=18,
 
 class CompleteIn(BaseModel):
     # material_id -> фактический расход
-    actual: dict[int, ActualQty]
+    actual: dict[DbId, ActualQty]
 
 
 class ComponentOut(BaseModel):
