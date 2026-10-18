@@ -259,6 +259,9 @@ async def judge(client, spec: dict, res: Result, truth: dict) -> dict[str, Any]:
         "code_interpreter_used": res.code_runs > 0,
         "files": res.files,
         "action_proposed": res.actions > 0,
+        # Судья проверяет числа по тем же данным, что видел ассистент, — иначе всё вне эталона «выдумано».
+        "tool_results": json.dumps(res.tool_data, ensure_ascii=False, default=str)[:12000],
+        "code_output": res.code_logs[:4000],
         "answer": res.answer,
     }
     try:
