@@ -1,7 +1,6 @@
 """Граница API: некорректный ввод → понятный текст по-русски, никогда не 500."""
 
 import re
-from datetime import date
 
 import httpx
 import pytest
@@ -9,6 +8,7 @@ import pytest
 from app.db import get_session
 from app.main import app
 from app.services.auth import create_token
+from app.services.common import today
 
 TOO_BIG = 2_147_483_648  # int4 + 1
 ENGLISH = re.compile(r"Input should|Field required|Not Found|Method Not Allowed|value is not", re.I)
@@ -85,7 +85,7 @@ async def test_nul_byte_is_rejected_with_text(client, method, url, body):
 async def test_huge_price_is_validation_error_not_overflow(client, world):
     body = {
         "supplier": "ООО Восковой двор",
-        "received_date": date.today().isoformat(),
+        "received_date": today().isoformat(),
         "lines": [
             {
                 "material_code": "WAX",

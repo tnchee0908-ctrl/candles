@@ -77,7 +77,13 @@ class OpenAIProvider:
                             for o in (item.outputs or [])
                             if getattr(o, "type", "") == "logs"
                         )
-                        yield CodeRun(code=item.code or "", logs=logs, error=item.status == "failed")
+                        # Исключение в Python не делает вызов «failed» — он завершён, а в логах traceback.
+                        failed = (
+                            item.status == "failed"
+                            or "Traceback (most recent call last)" in logs
+                            or any(getattr(o, "type", "") == "error" for o in (item.outputs or []))
+                        )
+                        yield CodeRun(code=item.code or "", logs=logs, error=failed)
                 elif etype == "response.completed":
                     resp = event.response
                     usage = resp.usage.model_dump() if resp.usage else {}

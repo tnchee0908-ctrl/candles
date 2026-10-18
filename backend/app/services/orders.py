@@ -34,7 +34,7 @@ from app.models import (
     Reservation,
 )
 from app.services import audit
-from app.services.common import Actor, fmt_num, q_qty
+from app.services.common import Actor, fmt_num, q_qty, today
 from app.services.permissions import Perm, require
 
 MAX_ORDER_QTY = 100_000
@@ -146,7 +146,7 @@ async def create_order(
         raise DomainError(f"Количество должно быть от 1 до {fmt_num(MAX_ORDER_QTY)} шт.")
     if workshop not in (1, 2, 3):
         raise DomainError("Цех должен быть 1, 2 или 3.")
-    if planned_date < date.today():
+    if planned_date < today():
         raise DomainError("Дата задания не может быть в прошлом.")
     recipe = await session.scalar(
         select(Recipe)
@@ -248,6 +248,11 @@ async def plan_order(
     _require_status(order, {OrderStatus.DRAFT, OrderStatus.PLANNED}, "планировать")
     before = order_snapshot(order)
     was_draft = order.status == OrderStatus.DRAFT
+    if was_draft and order.planned_date < today():
+        raise DomainError(
+            f"Плановая дата черновика {order.number} ({order.planned_date:%d.%m.%Y}) уже прошла. "
+            "Отмените его и создайте задание на актуальную дату."
+        )
     for comp in sorted(order.components, key=lambda c: c.material_id):
         await _reserve_component(session, order, comp)
     order.status = OrderStatus.PLANNED.value

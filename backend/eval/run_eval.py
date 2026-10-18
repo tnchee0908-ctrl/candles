@@ -13,7 +13,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -29,7 +29,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Batch, Conversation, Material, Message, ProductionOrder, User, UserFact
 from app.services import reports
-from app.services.common import Actor, q_money
+from app.services.common import Actor, q_money, today
 
 HERE = Path(__file__).resolve().parent
 REPORTS = HERE / "reports"
@@ -68,8 +68,8 @@ async def compute_truth(session) -> dict[str, Any]:
     soy = await reports.material_stock(session, actor, "WAX-SOY")
     truth["free_soy"] = soy[0]["free"]
 
-    today = date.today()
-    ws, we = reports.week_bounds(today)
+    current = today()
+    ws, we = reports.week_bounds(current)
     shortage = await reports.shortages_for_period(session, actor, ws, we)
     coc = next((r for r in shortage["by_material"] if r["material_code"] == "WAX-COC"), None)
     truth["coc_shortage_week"] = coc["shortage"] if coc else Decimal(0)
@@ -96,7 +96,7 @@ async def compute_truth(session) -> dict[str, Any]:
     avg = (await _avg_unit_cost(session))[soy_mat.id]
     truth["lavender_wax_delta"] = q_money(avg * Decimal("0.18") * Decimal("0.15"))
 
-    friday = today + timedelta(days=(4 - today.weekday()) % 7 or 7)
+    friday = current + timedelta(days=(4 - current.weekday()) % 7 or 7)
     truth["next_friday"] = friday.strftime("%d.%m.%Y")
     return truth
 

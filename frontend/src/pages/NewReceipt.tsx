@@ -15,6 +15,7 @@ import {
   PageHeader,
   Select,
 } from '@/components/ui'
+import { businessDate } from '@/lib/format'
 import type { Currency } from '@/lib/format'
 import type { Material, ReceiptResult } from '@/types'
 
@@ -27,7 +28,7 @@ interface Line {
   comment: string
 }
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => businessDate()
 const plural = (n: number, one: string, few: string, many: string) => {
   const m10 = n % 10
   const m100 = n % 100

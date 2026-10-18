@@ -9,14 +9,14 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.assistant import memory, uploads
 from app.assistant.chat import ChatService, confirm_action, message_to_dict, reject_action
 from app.assistant.factory import get_chat_service
 from app.assistant.quota import check_chat_quota
 from app.config import get_settings
-from app.deps import CurrentUser, SessionDep
+from app.deps import CurrentUser, SessionDep, actor_of
 from app.errors import DomainError, NotFound
 from app.models import ChatFile, Conversation, Message
 from app.schemas import DbId
@@ -241,20 +241,17 @@ async def list_memory(session: SessionDep, user: CurrentUser):
 
 @router.post("/memory")
 async def add_memory(body: FactIn, session: SessionDep, user: CurrentUser):
-    f = await memory.add_fact(session, user.id, body.text)
+    f = await memory.add_fact(session, actor_of(user), body.text)
     return {"id": f.id, "text": f.text, "created_at": f.created_at.isoformat()}
 
 
 @router.delete("/memory/{fact_id}")
 async def delete_memory(fact_id: Id, session: SessionDep, user: CurrentUser):
-    await memory.delete_fact(session, user.id, fact_id)
+    await memory.delete_fact(session, actor_of(user), fact_id)
     return {"ok": True}
 
 
 @router.delete("/memory")
 async def clear_memory(session: SessionDep, user: CurrentUser):
-    from app.models import UserFact
-
-    await session.execute(delete(UserFact).where(UserFact.user_id == user.id))
-    await session.commit()
+    await memory.clear_facts(session, actor_of(user))
     return {"ok": True}

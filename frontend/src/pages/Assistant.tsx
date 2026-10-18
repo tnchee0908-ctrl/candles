@@ -72,7 +72,7 @@ function toConfirmAction(a: ChatAction, submitting: boolean): ConfirmAction {
         }
       : a.status === 'rejected'
         ? { kind: 'rejected' }
-        : a.status === 'failed'
+        : a.status === 'failed' || a.status === 'expired'
           ? { kind: 'failed', error: a.result?.error ?? 'Действие не выполнено.' }
           : { kind: 'pending' }
   return {
@@ -104,7 +104,7 @@ function markdownComponents(files: ChatFile[]): Components {
     a: ({ href = '', children }) => {
       if (!isSandbox(href))
         return (
-          <a href={href} target="_blank" rel="noreferrer">
+          <a href={href} target="_blank" rel="noopener noreferrer nofollow" title={href}>
             {children}
           </a>
         )
@@ -120,7 +120,14 @@ function markdownComponents(files: ChatFile[]): Components {
         <span>{children}</span>
       )
     },
-    img: ({ src = '', alt }) => (isSandbox(src) ? null : <img src={src} alt={alt} />),
+    // Картинки из текста ответа не загружаем вообще: графики приходят файлами под ответом, а внешний
+    // адрес в ![](…) — возможный канал утечки (запрос с данными в адресе уйдёт при показе картинки).
+    img: ({ src = '', alt }) =>
+      isSandbox(src) ? null : (
+        <span className="text-fg-secondary" title={src}>
+          [картинка по внешней ссылке не показана{alt ? `: ${alt}` : ''}]
+        </span>
+      ),
   }
 }
 

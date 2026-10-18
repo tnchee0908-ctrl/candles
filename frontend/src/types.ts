@@ -204,7 +204,7 @@ export interface ActionPreview {
 export interface ChatAction {
   id: number
   kind: string
-  status: 'pending' | 'confirmed' | 'rejected' | 'failed'
+  status: 'pending' | 'confirmed' | 'rejected' | 'failed' | 'expired'
   preview: ActionPreview
   result?: { order_id?: number; order_number?: string; shortage?: string | null; error?: string } | null
   decided_at?: string | null

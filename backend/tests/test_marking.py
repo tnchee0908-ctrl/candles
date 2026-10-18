@@ -1,6 +1,6 @@
 """Отправка в маркировку: повтор без дубля, растущая пауза, журнал попыток, 4xx не повторяется."""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.models import MarkingAttempt, MarkingReport
 from app.services import marking, orders
+from app.services.common import today
 from mocks import marking as marking_mock
 from tests.conftest import add_batch
 
@@ -40,7 +41,7 @@ async def completed_order_report(session, world) -> MarkingReport:
     await add_batch(session, world, world.wick, "10", days_ago=3)
     tech = world.actors["tech"]
     result = await orders.create_and_plan(
-        session, tech, recipe_id=world.recipe.id, qty=2, planned_date=date.today() + timedelta(days=1)
+        session, tech, recipe_id=world.recipe.id, qty=2, planned_date=today() + timedelta(days=1)
     )
     await orders.start_order(session, tech, result.order.id)
     await orders.complete_order(

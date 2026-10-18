@@ -22,6 +22,7 @@ export const FIELD_LABELS: Record<string, string> = {
   code: 'Код',
   name: 'Название',
   unit: 'Единица',
+  text: 'Текст',
 };
 
 export const STATUS_LABELS: Record<string, string> = {

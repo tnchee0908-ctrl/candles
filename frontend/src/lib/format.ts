@@ -75,3 +75,14 @@ export function initials(fullName: string): string {
   const [last, first] = fullName.split(' ');
   return `${last?.[0] ?? ''}${first?.[0] ?? ''}`.toUpperCase();
 }
+
+/**
+ * Дата «сегодня + offset дней» в формате YYYY-MM-DD по времени мастерской (Москва), как на бэкенде.
+ * toISOString() дал бы дату по UTC: с 00:00 до 03:00 МСК — вчерашнюю.
+ */
+export function businessDate(offset = 0): string {
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow' }).format(new Date());
+  const d = new Date(`${today}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + offset);
+  return d.toISOString().slice(0, 10);
+}

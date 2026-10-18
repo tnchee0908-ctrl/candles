@@ -23,7 +23,7 @@ import { auditChanges, auditSummary } from '@/lib/audit'
 import { formatDateTime, shortName } from '@/lib/format'
 import type { AuditEntry, Page as PageData } from '@/types'
 
-const ENTITY: Record<string, string> = { batch: 'Партия', order: 'Задание', material: 'Материал', recipe: 'Рецепт' }
+const ENTITY: Record<string, string> = { batch: 'Партия', order: 'Задание', material: 'Материал', recipe: 'Рецепт', memory: 'Память ассистента' }
 const LINK: Record<string, string> = { batch: 'batches', order: 'orders' }
 
 /** 16 — Журнал изменений: кто, когда, что было и что стало — человекочитаемо, без JSON. */
@@ -69,6 +69,7 @@ export default function AuditPage() {
             <option value="order">Задания</option>
             <option value="material">Материалы</option>
             <option value="recipe">Рецепты</option>
+            <option value="memory">Память ассистента</option>
           </Select>
         </div>
         <label className="ml-1 inline-flex items-center gap-2 text-sm text-fg-label">

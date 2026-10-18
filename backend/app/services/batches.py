@@ -20,7 +20,7 @@ from app.models import (
     Supplier,
 )
 from app.services import audit
-from app.services.common import Actor, q_money, q_qty
+from app.services.common import Actor, q_money, q_qty, today
 from app.services.names import supplier_core
 from app.services.permissions import Perm, require
 from app.services.rates import RatesClient, get_rate
@@ -79,7 +79,7 @@ async def create_receipt(
     require(actor, Perm.CREATE_RECEIPT)
     if not lines:
         raise DomainError("В поступлении нет ни одной строки.")
-    if received_date > date.today():
+    if received_date > today():
         raise DomainError("Дата поступления не может быть в будущем.")
 
     supplier = await get_or_create_supplier(session, supplier_name)

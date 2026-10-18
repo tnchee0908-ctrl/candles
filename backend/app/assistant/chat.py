@@ -11,7 +11,7 @@ import logging
 import mimetypes
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -37,7 +37,7 @@ from app.config import get_settings
 from app.errors import DomainError, Forbidden, NotFound
 from app.models import ROLE_TITLES, ChatFile, Conversation, Message, PendingAction, User
 from app.services import orders
-from app.services.common import Actor, fmt_num
+from app.services.common import Actor, fmt_num, today
 from app.services.permissions import PERM_TITLES, Perm, has_perm
 from app.services.reports import week_bounds
 
@@ -57,20 +57,20 @@ def load_prompt(name: str) -> str:
 def build_instructions(
     actor: Actor, user_alias: str, facts: list[str], pii: Pseudonymizer, code_on: bool
 ) -> str:
-    today = date.today()
-    ws, we = week_bounds(today)
+    current = today()
+    ws, we = week_bounds(current)
     perms = [PERM_TITLES[p] for p in Perm if has_perm(actor, p)]
     facts_text = "\n".join(f"- {pii.mask(f)}" for f in facts) if facts else "- (пока ничего)"
     return Template(load_prompt("system.md")).safe_substitute(
-        today=today.isoformat(),
-        weekday=WEEKDAYS[today.weekday()],
+        today=current.isoformat(),
+        weekday=WEEKDAYS[current.weekday()],
         week_start=ws.isoformat(),
         week_end=we.isoformat(),
         user_alias=user_alias,
         role_title=ROLE_TITLES.get(actor.role, actor.role),  # type: ignore[call-overload]
         permissions=", ".join(perms),
         facts=facts_text,
-        code_interpreter="доступен" if code_on else "сейчас недоступен — графики и расчёты в Python не делай",
+        code_interpreter=tools.NOTES["code_interpreter_on" if code_on else "code_interpreter_off"],
     )
 
 
@@ -141,7 +141,7 @@ class ChatService:
             )
 
         state = TurnState()
-        work = asyncio.create_task(self._work(actor, conversation_id, assistant_msg.id, emit, state))
+        work = asyncio.create_task(self._work(actor, conversation_id, assistant_msg.id, text, emit, state))
         stopper = asyncio.create_task(stop.wait())
         try:
             done, _ = await asyncio.wait({work, stopper}, return_when=asyncio.FIRST_COMPLETED)
@@ -175,7 +175,13 @@ class ChatService:
     # ---------- основной цикл ----------
 
     async def _work(
-        self, actor: Actor, conversation_id: int, message_id: int, emit: Emit, state: TurnState
+        self,
+        actor: Actor,
+        conversation_id: int,
+        message_id: int,
+        user_text: str,
+        emit: Emit,
+        state: TurnState,
     ) -> None:
         async with self.session_factory() as session:
             conv = await session.get(Conversation, conversation_id)
@@ -196,6 +202,7 @@ class ChatService:
                 assistant_message_id=message_id,
                 sandbox=self.sandbox,
                 container_id=container_id,
+                user_message=user_text,
             )
             stats = RouterStats()
             state.llm_attempts = stats.attempts  # тот же список: попытки видны даже при обрыве
@@ -450,6 +457,16 @@ class ChatService:
 
 # ---------- подтверждение действий ----------
 
+ACTION_TTL = timedelta(minutes=30)
+EXPIRED_TEXT = (
+    "Предложение устарело: с момента подготовки прошло больше 30 минут, остатки могли измениться. "
+    "Попросите ассистента подготовить задание заново."
+)
+
+
+def is_expired(action: PendingAction) -> bool:
+    return action.status == "pending" and datetime.now(UTC) - action.created_at > ACTION_TTL
+
 
 async def confirm_action(session: AsyncSession, user: User, action_id: int) -> PendingAction:
     """Пользователь нажал «Подтвердить». Вызывается тот же сервис, что и у кнопки «Создать задание».
@@ -465,6 +482,13 @@ async def confirm_action(session: AsyncSession, user: User, action_id: int) -> P
         raise NotFound("Действие не найдено.")
     if action.status != "pending":
         raise DomainError("Это действие уже обработано.")
+    if is_expired(action):
+        # Предложение готовилось по остаткам на тот момент — через полчаса они могли измениться.
+        action.status = "expired"
+        action.result = {"error": EXPIRED_TEXT}
+        action.decided_at = datetime.now(UTC)
+        await session.commit()
+        raise DomainError(EXPIRED_TEXT)
     actor = Actor(user_id=user.id, full_name=user.full_name, role=user.role, via_assistant=True)
     p = action.payload
     try:
@@ -546,13 +570,14 @@ async def message_to_dict(session: AsyncSession, msg: Message) -> dict[str, Any]
         for a in await session.scalars(
             select(PendingAction).where(PendingAction.id.in_(ids)).order_by(PendingAction.id)
         ):
+            expired = is_expired(a)
             actions.append(
                 {
                     "id": a.id,
                     "kind": a.kind,
-                    "status": a.status,
+                    "status": "expired" if expired else a.status,
                     "preview": a.preview,
-                    "result": a.result,
+                    "result": {"error": EXPIRED_TEXT} if expired else a.result,
                     "decided_at": a.decided_at.isoformat() if a.decided_at else None,
                 }
             )

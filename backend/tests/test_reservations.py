@@ -1,7 +1,7 @@
 """FIFO, частичный резерв, дефицит, параллельные резервы, завершение с перерасходом и экономией."""
 
 import asyncio
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -10,9 +10,10 @@ from sqlalchemy import func, select
 from app.errors import Conflict, DomainError, Forbidden
 from app.models import Batch, Consumption, MarkingReport, OrderStatus, Reservation
 from app.services import orders
+from app.services.common import today
 from tests.conftest import add_batch
 
-TOMORROW = date.today() + timedelta(days=1)
+TOMORROW = today() + timedelta(days=1)
 
 
 async def reservations_by_batch(session, order_id, material_id=None) -> dict[int, Decimal]:

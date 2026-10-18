@@ -10,6 +10,8 @@ from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException, Query
 
+from app.services.common import today
+
 app = FastAPI(title="Mock: курсы валют")
 
 BASE = {"USD": Decimal("92.50"), "EUR": Decimal("100.20")}
@@ -27,7 +29,7 @@ def rate_for(currency: str, day: date) -> Decimal:
 def get_rate(currency: str = Query(pattern="^(USD|EUR)$"), date_: date = Query(alias="date")) -> dict:
     if date_.weekday() >= 5:
         raise HTTPException(404, "Курс на выходной день не публикуется")
-    if date_ > date.today():
+    if date_ > today():
         raise HTTPException(404, "Курс ещё не опубликован")
     return {"currency": currency, "date": date_.isoformat(), "rate": str(rate_for(currency, date_))}
 

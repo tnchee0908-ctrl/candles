@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from string import Template
 from typing import Any, Literal
 
 import yaml
@@ -39,7 +40,7 @@ from app.models import (
 from app.services import batches as batches_service
 from app.services import catalog, orders, reports
 from app.services.batches import BatchFilters
-from app.services.common import Actor, fmt_num, q_money
+from app.services.common import Actor, fmt_num, q_money, today
 from app.services.permissions import Perm, has_perm, require
 from app.services.rates import get_rate
 
@@ -57,6 +58,8 @@ class ToolContext:
     sandbox: Sandbox | None = None
     container_id: str | None = None
     actions: list[dict[str, Any]] = field(default_factory=list)
+    # Текст текущего сообщения пользователя: основание для фактов памяти проверяется по нему.
+    user_message: str = ""
 
 
 class Args(BaseModel):
@@ -70,6 +73,7 @@ Handler = Callable[[ToolContext, Any], Awaitable[dict[str, Any]]]
 class Tool:
     name: str
     description: str
+    params: dict[str, str]
     args_model: type[Args]
     handler: Handler
     kind: Literal["read", "action", "memory", "sandbox"] = "read"
@@ -77,21 +81,30 @@ class Tool:
     def spec(self) -> ToolSpec:
         schema = self.args_model.model_json_schema()
         schema.pop("title", None)
+        for param, text in self.params.items():
+            schema["properties"][param]["description"] = " ".join(text.split())
         return ToolSpec(name=self.name, description=self.description, parameters=schema)
 
 
 REGISTRY: dict[str, Tool] = {}
 
-
-# Описания инструментов — это текст для модели, поэтому они лежат в prompts/tools.yaml, а не в коде.
-DESCRIPTIONS: dict[str, str] = yaml.safe_load(
-    (Path(__file__).resolve().parent.parent / "prompts" / "tools.yaml").read_text(encoding="utf-8")
-)
+PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
+# Тексты для модели (описания инструментов и аргументов, служебные пометки) лежат в prompts/*.yaml.
+TEXTS: dict[str, dict[str, Any]] = yaml.safe_load((PROMPTS / "tools.yaml").read_text(encoding="utf-8"))
+NOTES: dict[str, str] = yaml.safe_load((PROMPTS / "notes.yaml").read_text(encoding="utf-8"))
 
 
 def tool(name: str, args_model: type[Args], kind: str = "read"):
     def deco(fn: Handler) -> Handler:
-        REGISTRY[name] = Tool(name, DESCRIPTIONS[name], args_model, fn, kind)  # type: ignore[arg-type]
+        text = TEXTS[name]
+        REGISTRY[name] = Tool(
+            name,
+            text["description"],
+            text.get("params") or {},
+            args_model,
+            fn,
+            kind,  # type: ignore[arg-type]
+        )
         return fn
 
     return deco
@@ -101,9 +114,7 @@ def tool(name: str, args_model: type[Args], kind: str = "read"):
 
 
 class StockArgs(Args):
-    material: str | None = Field(
-        default=None, max_length=100, description="Код или часть названия материала. Пусто — все материалы."
-    )
+    material: str | None = Field(default=None, max_length=100)
 
 
 @tool("get_material_stock", StockArgs)
@@ -115,9 +126,9 @@ async def get_material_stock(ctx: ToolContext, args: StockArgs) -> dict[str, Any
 
 
 class PeriodArgs(Args):
-    date_from: date = Field(description="Начало периода, YYYY-MM-DD")
-    date_to: date = Field(description="Конец периода включительно, YYYY-MM-DD")
-    workshop: int | None = Field(default=None, ge=1, le=3, description="Номер цеха, если нужно отфильтровать")
+    date_from: date
+    date_to: date
+    workshop: int | None = Field(default=None, ge=1, le=3)
 
 
 @tool("get_shortages", PeriodArgs)
@@ -128,7 +139,7 @@ async def get_shortages(ctx: ToolContext, args: PeriodArgs) -> dict[str, Any]:
 
 
 class BatchArgs(Args):
-    batch_number: str = Field(max_length=20, description="Номер партии, например П-00012")
+    batch_number: str = Field(max_length=20)
 
 
 def _normalize_number(value: str, prefix: str) -> str:
@@ -179,7 +190,7 @@ async def get_batch_history(ctx: ToolContext, args: BatchArgs) -> dict[str, Any]
 
 
 class OrderNumberArgs(Args):
-    order_number: str = Field(max_length=20, description="Номер задания, например З-00007")
+    order_number: str = Field(max_length=20)
 
 
 @tool("get_order_cost", OrderNumberArgs)
@@ -191,8 +202,8 @@ OrderStatusLit = Literal["draft", "planned", "in_progress", "completed", "cancel
 
 
 class ListOrdersArgs(Args):
-    date_from: date | None = Field(default=None, description="Плановая дата от, YYYY-MM-DD")
-    date_to: date | None = Field(default=None, description="Плановая дата до, YYYY-MM-DD")
+    date_from: date | None = Field(default=None)
+    date_to: date | None = Field(default=None)
     statuses: list[OrderStatusLit] | None = Field(default=None, max_length=5)
     workshop: int | None = Field(default=None, ge=1, le=3)
 
@@ -253,9 +264,7 @@ async def list_recipes(ctx: ToolContext, args: NoArgs) -> dict[str, Any]:
 
 class FindBatchesArgs(Args):
     material: str | None = Field(default=None, max_length=100)
-    supplier: str | None = Field(
-        default=None, max_length=100, description="Поставщик (можно токен SUPPLIER_n)"
-    )
+    supplier: str | None = Field(default=None, max_length=100)
     status: Literal["on_check", "accepted", "rejected"] | None = None
     date_from: date | None = None
     date_to: date | None = None
@@ -297,30 +306,38 @@ async def find_batches(ctx: ToolContext, args: FindBatchesArgs) -> dict[str, Any
 
 class RateArgs(Args):
     currency: Literal["USD", "EUR"]
-    on_date: date | None = Field(default=None, description="Дата курса; по умолчанию сегодня")
+    on_date: date | None = Field(default=None)
+    amounts_rub: list[Decimal] = Field(
+        default_factory=list,
+        max_length=50,
+    )
 
 
 @tool("get_currency_rate", RateArgs)
 async def get_currency_rate(ctx: ToolContext, args: RateArgs) -> dict[str, Any]:
-    on_date = args.on_date or date.today()
+    on_date = args.on_date or today()
     rate, rate_date = await get_rate(ctx.session, args.currency, on_date)
     await ctx.session.commit()
-    return {
+    result: dict[str, Any] = {
         "currency": args.currency,
         "rub_per_unit": rate,
         "rate_date": rate_date,
         "requested_date": on_date,
     }
+    if args.amounts_rub:
+        # Пересчёт в Decimal с округлением до копеек (центов) — модель не считает деньги в уме.
+        result["converted"] = [{"rub": a, args.currency.lower(): q_money(a / rate)} for a in args.amounts_rub]
+    return result
 
 
 # ---------- Действие ----------
 
 
 class ProposeOrderArgs(Args):
-    recipe: str = Field(max_length=100, description="Название рецепта/продукта, например «Лаванда»")
-    qty: int = Field(ge=1, le=100_000, description="Количество, шт")
-    planned_date: date = Field(description="Плановая дата, YYYY-MM-DD")
-    workshop: int = Field(default=1, ge=1, le=3, description="Цех")
+    recipe: str = Field(max_length=100)
+    qty: int = Field(ge=1, le=100_000)
+    planned_date: date
+    workshop: int = Field(default=1, ge=1, le=3)
     comment: str | None = Field(default=None, max_length=300)
 
 
@@ -329,7 +346,7 @@ async def propose_production_order(ctx: ToolContext, args: ProposeOrderArgs) -> 
     # Права проверяем уже на этапе предложения — чтобы не показывать кнопку, которая всё равно не сработает.
     # При подтверждении сервис проверит их ещё раз.
     require(ctx.actor, Perm.MANAGE_ORDERS)
-    if args.planned_date < date.today():
+    if args.planned_date < today():
         raise DomainError("Дата задания не может быть в прошлом.")
     recipe = await catalog.find_recipe(ctx.session, ctx.actor, args.recipe)
     preview_rows = await orders.estimate_plan(ctx.session, ctx.actor, recipe_id=recipe.id, qty=args.qty)
@@ -366,7 +383,7 @@ async def propose_production_order(ctx: ToolContext, args: ProposeOrderArgs) -> 
     return {
         "status": "awaiting_user_confirmation",
         "action_id": action.id,
-        "note": "Задание ЕЩЁ НЕ СОЗДАНО. Пользователь увидит карточку и должен нажать «Подтвердить».",
+        "note": NOTES["order_not_created"],
         "preview": preview,
     }
 
@@ -375,43 +392,40 @@ async def propose_production_order(ctx: ToolContext, args: ProposeOrderArgs) -> 
 
 
 class FactArgs(Args):
-    fact: str = Field(
-        min_length=3, max_length=300, description="Факт о пользователе, коротко, от третьего лица"
+    fact: str = Field(min_length=3, max_length=300)
+    source_quote: str = Field(
+        min_length=4,
+        max_length=300,
     )
 
 
 @tool("remember_fact", FactArgs, kind="memory")
 async def remember_fact(ctx: ToolContext, args: FactArgs) -> dict[str, Any]:
-    fact = await memory.add_fact(ctx.session, ctx.actor.user_id, args.fact)
+    memory.check_quote(args.source_quote, ctx.user_message)
+    fact = await memory.add_fact(ctx.session, ctx.actor, args.fact)
     return {"saved": True, "fact_id": fact.id, "fact": fact.text}
 
 
 # ---------- Данные для Code Interpreter ----------
 
 Dataset = Literal["consumption_by_week", "batches", "orders", "stock", "recipe_costs"]
+EXPORT_MAX_ROWS = 5000
 
 
 class ExportArgs(Args):
-    dataset: Dataset = Field(
-        description="consumption_by_week — расход материалов по неделям; batches — партии; orders — задания; "
-        "stock — остатки; recipe_costs — нормы рецептов и средняя себестоимость материалов"
-    )
-    date_from: date | None = Field(
-        default=None, description="Начало периода (для consumption_by_week, batches, orders)"
-    )
+    dataset: Dataset
+    date_from: date | None = Field(default=None)
     date_to: date | None = Field(default=None)
     material: str | None = Field(
         default=None,
         max_length=100,
-        description="Фильтр по материалу (код или часть названия) для consumption_by_week, batches и stock. "
-        "Для recipe_costs и orders не применяется.",
     )
 
 
 async def _dataset_rows(ctx: ToolContext, args: ExportArgs) -> list[dict[str, Any]]:
-    today = date.today()
-    d_from = args.date_from or today - timedelta(days=90)
-    d_to = args.date_to or today
+    current = today()
+    d_from = args.date_from or current - timedelta(days=90)
+    d_to = args.date_to or current
     if args.dataset == "consumption_by_week":
         return await reports.consumption_by_week(ctx.session, ctx.actor, d_from, d_to, args.material)
     if args.dataset == "stock":
@@ -419,14 +433,22 @@ async def _dataset_rows(ctx: ToolContext, args: ExportArgs) -> list[dict[str, An
     if args.dataset == "batches":
         out = []
         show_cost = has_perm(ctx.actor, Perm.VIEW_COSTS) or has_perm(ctx.actor, Perm.CREATE_RECEIPT)
-        rows, _ = await batches_service.list_batches(
-            ctx.session,
-            ctx.actor,
-            BatchFilters(material=args.material, date_from=d_from, date_to=d_to),
-            sort="received_date",
-            direction="asc",
-            page_size=200,
-        )
+        rows: list = []
+        page = 1
+        while len(rows) <= EXPORT_MAX_ROWS:  # реестр отдаёт по 200 — собираем страницы до лимита
+            chunk, total = await batches_service.list_batches(
+                ctx.session,
+                ctx.actor,
+                BatchFilters(material=args.material, date_from=d_from, date_to=d_to),
+                sort="received_date",
+                direction="asc",
+                page=page,
+                page_size=200,
+            )
+            rows += chunk
+            if not chunk or len(rows) >= total:
+                break
+            page += 1
         for b, m, s in rows:
             row = {
                 "number": b.number,
@@ -446,7 +468,11 @@ async def _dataset_rows(ctx: ToolContext, args: ExportArgs) -> list[dict[str, An
         return out
     if args.dataset == "orders":
         rows = await orders.list_orders(
-            ctx.session, ctx.actor, date_from=d_from, date_to=d_to + timedelta(days=60)
+            ctx.session,
+            ctx.actor,
+            date_from=d_from,
+            date_to=d_to + timedelta(days=60),
+            limit=EXPORT_MAX_ROWS + 1,
         )
         return [
             {
@@ -506,6 +532,9 @@ async def export_dataset(ctx: ToolContext, args: ExportArgs) -> dict[str, Any]:
     rows = await _dataset_rows(ctx, args)
     if not rows:
         return {"rows": 0, "message": "За выбранный период данных нет — файл не создан."}
+    total = len(rows)
+    truncated = total > EXPORT_MAX_ROWS
+    rows = rows[:EXPORT_MAX_ROWS]
     # Псевдонимы — до записи в файл: в песочнице не должно быть ПДн.
     masked = [ctx.pii.mask_obj({k: _cell(v) for k, v in r.items()}) for r in rows]
     columns = list(masked[0].keys())
@@ -513,17 +542,20 @@ async def export_dataset(ctx: ToolContext, args: ExportArgs) -> dict[str, Any]:
     writer = csv.DictWriter(buf, fieldnames=columns)
     writer.writeheader()
     writer.writerows(masked)
-    filename = f"{args.dataset}_{date.today():%Y%m%d}.csv"
+    filename = f"{args.dataset}_{today():%Y%m%d}.csv"
     try:
         path = await ctx.sandbox.upload(ctx.container_id, filename, buf.getvalue().encode("utf-8"))
     except SandboxError as exc:
         raise DomainError("Не удалось загрузить данные в песочницу. Попробуйте ещё раз.") from exc
-    result = {"path": path, "rows": len(masked), "columns": columns, "head": masked[:5]}
-    if args.material and args.dataset in ("recipe_costs", "orders"):
-        result["note"] = (
-            "Фильтр material к этому набору не применяется: в файле все строки целиком. "
-            "Ищи нужный материал по колонке material_code (например, WAX-SOY — воск соевый)."
+    result: dict[str, Any] = {"path": path, "rows": len(masked), "columns": columns, "head": masked[:5]}
+    if truncated:
+        # Не обрезаем молча: модель должна сказать, что данные неполные.
+        result["truncated"] = True
+        result["truncated_note"] = Template(NOTES["export_truncated"]).safe_substitute(
+            limit=EXPORT_MAX_ROWS, total=total
         )
+    if args.material and args.dataset in ("recipe_costs", "orders"):
+        result["note"] = NOTES["export_filter_ignored"]
     return result
 
 
@@ -576,10 +608,7 @@ async def execute(ctx: ToolContext, name: str, raw_arguments: str) -> ToolResult
         await ctx.session.rollback()
         return ToolResult(
             False,
-            {
-                "error": "Внутренняя ошибка инструмента. Сообщи пользователю, что данные "
-                "сейчас получить не удалось."
-            },
+            {"error": NOTES["tool_internal_error"]},
             "внутренняя ошибка",
         )
 

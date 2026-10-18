@@ -5,14 +5,7 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Свечная мастерская</title>
-    <script>
-      // Тема до отрисовки, чтобы не мелькала светлая (логика та же, что в src/theme.ts)
-      try {
-        var t = localStorage.getItem('candles_theme')
-        var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
-        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-      } catch (e) {}
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

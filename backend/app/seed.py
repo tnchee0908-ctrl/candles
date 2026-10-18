@@ -26,7 +26,7 @@ from app.models import (
 from app.services import batches, catalog, orders
 from app.services.auth import hash_password
 from app.services.batches import ReceiptLine
-from app.services.common import Actor
+from app.services.common import Actor, today
 from mocks.rates import rate_for
 
 USERS = [
@@ -90,7 +90,7 @@ class LocalRatesClient:
     """Те же правила, что у мок-сервиса курсов, но без сети — чтобы сид не зависел от порядка запуска."""
 
     async def fetch(self, currency: str, on_date: date) -> Decimal | None:
-        if on_date.weekday() >= 5 or on_date > date.today():
+        if on_date.weekday() >= 5 or on_date > today():
             return None
         return rate_for(currency, on_date)
 
@@ -100,7 +100,7 @@ def nearest_saturday(d: date) -> date:
 
 
 def d(days_ago: int) -> date:
-    return date.today() - timedelta(days=days_ago)
+    return today() - timedelta(days=days_ago)
 
 
 async def seed() -> None:
@@ -173,7 +173,7 @@ async def seed() -> None:
                 technologist,
                 recipe_id=recipe_ids[recipe],
                 qty=qty,
-                planned_date=date.today(),
+                planned_date=today(),
                 workshop=1 + days_ago % 2,
             )
             order = result.order
@@ -330,13 +330,13 @@ async def seed() -> None:
         )
 
         # --- Текущие задания ---
-        today = date.today()
-        friday = today + timedelta(days=(4 - today.weekday()) % 7)
-        tomorrow = today + timedelta(days=1)
-        next_tuesday = today + timedelta(days=(1 - today.weekday()) % 7 or 7)
+        current = today()
+        friday = current + timedelta(days=(4 - current.weekday()) % 7)
+        tomorrow = current + timedelta(days=1)
+        next_tuesday = current + timedelta(days=(1 - current.weekday()) % 7 or 7)
 
         running = await orders.create_and_plan(
-            session, technologist, recipe_id=recipe_ids["Лаванда"], qty=50, planned_date=today, workshop=2
+            session, technologist, recipe_id=recipe_ids["Лаванда"], qty=50, planned_date=current, workshop=2
         )
         await orders.start_order(session, technologist, running.order.id)
         await orders.create_and_plan(

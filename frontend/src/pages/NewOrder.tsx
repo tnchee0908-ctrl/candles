@@ -26,15 +26,11 @@ import {
   Th,
   Tr,
 } from '@/components/ui'
-import { formatQty } from '@/lib/format'
+import { businessDate, formatQty } from '@/lib/format'
 import { levelByQty } from '@/lib/reserve'
 import type { OrderCard, PreviewRow, Recipe } from '@/types'
 
-const isoDate = (offset = 0) => {
-  const d = new Date()
-  d.setDate(d.getDate() + offset)
-  return d.toISOString().slice(0, 10)
-}
+const isoDate = businessDate
 
 /** 13 — Новое задание: форма + живой предпросмотр «что будет зарезервировано». */
 export default function NewOrderPage() {

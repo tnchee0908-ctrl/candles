@@ -2,8 +2,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 QTY_STEP = Decimal("0.0001")
+# Мастерская работает по Москве: «сегодня», «эта неделя», «пятница» и дата поступления по умолчанию
+# считаются по местному времени, а не по UTC контейнера (иначе с 00:00 до 03:00 МСК был бы «вчерашний» день).
+BUSINESS_TZ = ZoneInfo("Europe/Moscow")
 MONEY_STEP = Decimal("0.01")
 
 
@@ -15,6 +19,10 @@ class Actor:
     full_name: str
     role: str
     via_assistant: bool = False
+
+
+def today() -> date:
+    return datetime.now(BUSINESS_TZ).date()
 
 
 def q_qty(value: Decimal) -> Decimal:

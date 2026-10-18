@@ -4,7 +4,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import asyncpg
@@ -33,7 +33,7 @@ from app.models import (  # noqa: E402
     User,
 )
 from app.services.auth import hash_password  # noqa: E402
-from app.services.common import Actor  # noqa: E402
+from app.services.common import Actor, today  # noqa: E402
 
 SEQUENCES = ("receipt_number_seq", "batch_number_seq", "order_number_seq")
 
@@ -134,7 +134,7 @@ async def world(session: AsyncSession) -> World:
         RecipeItem(material_id=wick.id, qty_per_unit=Decimal("1")),
     ]
     session.add(recipe)
-    receipt = Receipt(supplier_id=supplier.id, received_date=date.today(), created_by_id=users["sklad"].id)
+    receipt = Receipt(supplier_id=supplier.id, received_date=today(), created_by_id=users["sklad"].id)
     session.add(receipt)
     await session.commit()
     actors = {k: Actor(u.id, u.full_name, u.role) for k, u in users.items()}
@@ -150,7 +150,7 @@ async def add_batch(
     status: str = "accepted",
     comment: str | None = None,
 ) -> Batch:
-    day = date.today() - timedelta(days=days_ago)
+    day = today() - timedelta(days=days_ago)
     b = Batch(
         receipt_id=world.receipt.id,
         material_id=material.id,
